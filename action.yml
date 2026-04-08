@@ -1,0 +1,37 @@
+name: 'Glean Agent Import'
+description: 'Import a Glean workflow agent from your CI pipeline into a Glean workspace'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+inputs:
+  api_key:
+    description: 'Glean import API key (store as a GitHub secret)'
+    required: true
+  glean_url:
+    description: 'Your Glean instance URL e.g. https://acme.glean.com'
+    required: true
+  agent_file:
+    description: 'Path to the exported agent JSON file in your repository'
+    required: true
+  deploy_mode:
+    description: '"staged" (pending moderator approval) or "live" (immediate publish)'
+    required: false
+    default: 'staged'
+  commit_message:
+    description: 'Message attached to this import version in Glean. Defaults to the git commit SHA.'
+    required: false
+    default: ''
+  dry_run:
+    description: 'If true, skips the HTTP call and logs what would be sent. Useful for testing.'
+    required: false
+    default: 'false'
+outputs:
+  agent_id:
+    description: 'The Glean workflow agent ID that was created or updated'
+  staged_url:
+    description: 'Direct link to the staged version in Glean (only when deploy_mode is staged)'
+  status:
+    description: '"created", "updated", or "error"'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
