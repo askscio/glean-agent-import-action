@@ -1,228 +1,134 @@
-# Glean Agent Import Action
+# Glean Agent Sync Action
 
-A GitHub Action to import a Glean workflow agent from your CI pipeline into a Glean workspace.
+A GitHub Action that keeps your git-managed Glean agents in sync with your Glean workspace.
 
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Glean%20Agent%20Import-blue?logo=github)](https://github.com/marketplace/actions/glean-agent-import)
-
----
-
-## Overview
-
-This action takes an exported Glean agent JSON file from your repository and pushes it to your Glean workspace via the Import API. It supports both `staged` (pending moderator approval) and `live` (immediate publish) deploy modes.
-
----
-
-## Prerequisites
-
-- A Glean workspace with the Agent Import feature enabled
-- A Glean Import API key generated from your workspace admin settings
-- An exported agent JSON file committed to your repository (generated via Glean's agent export)
-
----
+- **On pull requests** — creates a draft preview in Glean and posts a comment with preview links
+- **On merge** — syncs updated agent definitions into Glean (staged or published) and posts run links back to the PR
 
 ## Usage
 
 ```yaml
-- name: Import Glean Agent
-  uses: askscio/glean-agent-import-action@v1
-  with:
-    api_key: ${{ secrets.GLEAN_IMPORT_KEY }}
-    glean_url: 'https://acme.glean.com'
-    agent_file: 'agents/my-agent.json'
-```
-
----
-
-## Inputs
-
-| Input | Required | Default | Description |
-|:------|:--------:|:-------:|:------------|
-| `api_key` | ✅ | — | Glean Import API key. Always store as a GitHub secret. |
-| `glean_url` | ✅ | — | Your Glean instance URL, e.g. `https://acme.glean.com` |
-| `agent_file` | ✅ | — | Path to the exported agent JSON file in your repository |
-| `deploy_mode` | ❌ | `staged` | `staged` (pending approval) or `live` (immediate publish) |
-| `commit_message` | ❌ | Git commit SHA | Message attached to this import version in Glean |
-
----
-
-## Outputs
-
-| Output | Description |
-|:-------|:------------|
-| `agent_id` | The Glean workflow agent ID that was created or updated |
-| `staged_url` | Direct link to the staged version in Glean (only when `deploy_mode: staged`) |
-| `status` | `created`, `updated`, or `error` |
-
----
-
-## Examples
-
-### Basic — Push on merge to main
-
-```yaml
-name: Deploy Glean Agent
+name: Glean Agent Sync
 
 on:
+  pull_request:
+    paths:
+      - '.glean/agents/**'
   push:
     branches:
       - main
     paths:
-      - 'agents/**'
+      - '.glean/agents/**'
+  workflow_dispatch:
+    inputs:
+      agent_folder:
+        description: 'Specific agent folder to sync (leave blank to sync all changed)'
+        required: false
+      is_draft:
+        description: 'Force draft preview mode even on push'
+        required: false
+        default: 'false'
 
 jobs:
-  import-agent:
+  sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Import Glean Agent
-        uses: askscio/glean-agent-import-action@v1
         with:
-          api_key: ${{ secrets.GLEAN_IMPORT_KEY }}
-          glean_url: 'https://acme.glean.com'
-          agent_file: 'agents/my-agent.json'
-          deploy_mode: 'staged'
-          commit_message: 'Deployed from ${{ github.sha }}'
+          fetch-depth: 0  # required for git diff to detect changed folders
+
+      - uses: askscio/glean-agent-import-action@v1
+        with:
+          instance-url-fe: 'https://your-company.glean.com'
+          instance-url-be: 'https://your-company-be.glean.com'
+          api-token: ${{ secrets.GLEAN_API_TOKEN }}
 ```
 
----
+> **Note:** `fetch-depth: 0` is required. The action uses `git diff` to detect which agent folders changed since the base commit.
 
-### Multi-agent — Import all agents in a directory
+## Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `instance-url-fe` | ✅ | — | Frontend instance URL used for preview/run links in PR comments (e.g. `https://acme.glean.com`) |
+| `instance-url-be` | ✅ | — | Backend instance URL for API calls (e.g. `https://acme-be.glean.com`) |
+| `api-token` | ✅ | — | Glean client API token with `AGENTS` scope |
+| `agent-directory` | ❌ | `.glean/agents` | Path within the repo where agent folders live |
+| `default-sync-mode` | ❌ | `staged` | Default sync mode on push/merge: `staged` or `published`. Can be overridden per-agent via `sync-mode` in `glean-sync.yaml` |
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, status}]` |
+
+## Workflow dispatch inputs
+
+When triggered via `workflow_dispatch`, the action reads these inputs from `github.event.inputs`:
+
+| Input | Description |
+|-------|-------------|
+| `agent_folder` | Sync a specific agent folder by name, skipping diff detection |
+| `is_draft` | Set to `true` to force draft preview mode even on a push event |
+
+## Agent folder structure
+
+Each agent lives in its own subfolder under `agent-directory`. The action supports two agent types, detected automatically from the folder contents.
+
+### Autonomous agents (`spec.yaml`)
+
+```
+.glean/agents/
+└── my-agent/
+    ├── spec.yaml          # Agent config: id, name, description, tools, skills, etc.
+    ├── instructions.md    # Agent instructions (referenced by spec.yaml)
+    └── glean-sync.yaml    # Optional — override sync-mode or message
+```
+
+`spec.yaml` example:
 
 ```yaml
-name: Deploy All Glean Agents
-
-on:
-  push:
-    branches:
-      - main
-
-jobs:
-  import-agents:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        agent:
-          - agents/support-agent.json
-          - agents/onboarding-agent.json
-          - agents/hr-agent.json
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Import ${{ matrix.agent }}
-        uses: askscio/glean-agent-import-action@v1
-        with:
-          api_key: ${{ secrets.GLEAN_IMPORT_KEY }}
-          glean_url: 'https://acme.glean.com'
-          agent_file: ${{ matrix.agent }}
-          deploy_mode: 'staged'
+id: agent-abc123
+name: My Agent
+description: Does something useful
+tools:
+  - toolProviderId: glean-search
 ```
 
----
+### Workflow agents (`.json` spec)
 
-### PR preview — Stage on PR, publish on merge
+```
+.glean/agents/
+└── my-workflow/
+    ├── my-workflow.json   # Workflow spec JSON (exactly one .json file per folder)
+    └── glean-sync.yaml    # Required — must contain agent-id
+```
+
+### `glean-sync.yaml` reference
 
 ```yaml
-name: Glean Agent CI
-
-on:
-  pull_request:
-    paths: ['agents/**']
-  push:
-    branches: [main]
-    paths: ['agents/**']
-
-jobs:
-  import-agent:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Import Agent
-        uses: askscio/glean-agent-import-action@v1
-        with:
-          api_key: ${{ secrets.GLEAN_IMPORT_KEY }}
-          glean_url: 'https://acme.glean.com'
-          agent_file: 'agents/my-agent.json'
-          deploy_mode: ${{ github.event_name == 'push' && 'live' || 'staged' }}
+agent-id: agent-abc123    # Required for workflow agents; optional override for autonomous agents
+sync-mode: staged         # Optional: "staged" (default) or "published"
+message: "My release note" # Optional: version message shown in Glean (defaults to PR title or commit subject)
 ```
 
----
+## Sync modes
 
-## Setting Up Your API Key
+| Mode | Trigger | Behaviour |
+|------|---------|-----------|
+| `draft_preview` | Pull request (always) | Creates a non-visible draft in Glean. Preview link posted to the PR. |
+| `staged` | Push/merge (default) | Saves a new staged version pending moderator approval in Glean. |
+| `published` | Push/merge (opt-in) | Immediately publishes the agent to all users. |
 
-1. Navigate to **Workspace Admin → Integrations → Agent Import** in your Glean instance
-2. Click **Generate Import Key**
-3. Copy the key and add it to your GitHub repository:
-   - Go to **Settings → Secrets and variables → Actions**
-   - Click **New repository secret**
-   - Name: `GLEAN_IMPORT_KEY`, Value: paste the key
-4. Never commit the key directly to your repository
+To publish on merge, set `default-sync-mode: published` on the action input, or set `sync-mode: published` in a specific agent's `glean-sync.yaml`.
 
----
+## How it works
 
-## Agent File Format
+1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
+2. **Convert** — for autonomous agents (`spec.yaml`), converts the folder into the Glean workflow spec JSON format using `agent_converter.py`.
+3. **Sync** — calls the Glean API (`POST /rest/api/v1/agents/{id}`) for each changed agent.
+4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
-The `agent_file` should be an exported Glean agent JSON, generated from the Glean agent builder's export functionality. The file structure looks like:
+## API token
 
-```json
-{
-  "serverVersion": "1.0",
-  "rootWorkflow": {
-    "name": "My Agent",
-    "schema": {
-      "trigger": { "type": "INPUT_FORM" },
-      "steps": [ ... ]
-    },
-    "icon": { "name": "box", "backgroundColor": "#000000" }
-  }
-}
-```
-
-> **Note:** Sub-agents are not supported in the current version. Only the `rootWorkflow` is imported.
-
----
-
-## Deploy Modes
-
-| Mode | Behaviour |
-|:-----|:----------|
-| `staged` | Agent is pushed as a staged version pending moderator review. A `staged_url` is returned for the reviewer to inspect and publish. |
-| `live` | Agent is published immediately without a moderation step. Requires the API key to have publish permissions. |
-
----
-
-## Error Handling
-
-The action exits with a non-zero code on:
-
-| Condition | Exit Code |
-|:----------|:---------:|
-| Invalid or missing API key | `1` |
-| Malformed agent JSON | `1` |
-| Glean instance unreachable | `1` |
-| Validation failure (e.g. missing steps) | `1` |
-| Successful import | `0` |
-
----
-
-## Versioning
-
-This action follows semantic versioning. Pin to a major version tag for stability:
-
-```yaml
-uses: askscio/glean-agent-import-action@v1   # recommended
-uses: askscio/glean-agent-import-action@v1.2.0  # pin to exact version
-```
-
----
-
-## Contributing
-
-This action is maintained by the Glean engineering team. For bugs or feature requests, open an issue in this repository.
-
----
-
-## License
-
-Apache 2.0 — see [LICENSE](./LICENSE)
+Create a Glean client API token with the **`AGENTS`** scope and store it as a GitHub Actions secret (e.g. `GLEAN_API_TOKEN`).
