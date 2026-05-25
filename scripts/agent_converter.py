@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyyaml"]
 # ///
+# Precommit.IfChange
 """
 Bidirectional converter between agents folder representation and workflow spec JSON
 
@@ -473,3 +474,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+# Precommit.ThenChange(scio:.github/actions/agent-sync-action/scripts/agent_converter.py, scio:python_scio/scripts/agents/agent_converter.py)
