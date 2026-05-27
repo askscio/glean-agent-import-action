@@ -1,4 +1,4 @@
-# Glean Agent Sync Action
+# Glean Agent Sync Action 2
 
 A GitHub Action that keeps your git-managed Glean agents in sync with your Glean workspace.
 
