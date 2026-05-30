@@ -54,6 +54,7 @@ jobs:
 | `instance-url-be` | ✅ | — | Backend instance URL for API calls (e.g. `https://acme-be.glean.com`) |
 | `api-token` | ✅ | — | Glean client API token with `AGENTS` scope |
 | `agent-directory` | ❌ | `.glean/agents` | Path within the repo where agent folders live |
+| `shared-root` | ❌ | `.glean/common` | Root directory for shared reusable agent resources. Changes here trigger downstream agent re-sync via symlink dependency resolution. |
 | `default-sync-mode` | ❌ | `staged` | Default sync mode on push/merge: `staged` or `published`. Can be overridden per-agent via `sync-mode` in `glean-sync.yaml` |
 
 ## Outputs
@@ -128,6 +129,79 @@ To publish on merge, set `default-sync-mode: published` on the action input, or 
 2. **Convert** — for autonomous agents (`spec.yaml`), converts the folder into the Glean workflow spec JSON format using `agent_converter.py`.
 3. **Sync** — calls the Glean API (`POST /rest/api/v1/agents/{id}`) for each changed agent.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
+
+## Shared resources (`shared-root`)
+
+Agents can depend on shared resources (skills, sub-agents, prompts, artifacts) via symlinks. When a shared resource changes, the action automatically detects all downstream agents that depend on it and re-syncs them.
+
+### How it works
+
+1. Files under `shared-root` (default `.glean/common/`) are monitored for changes.
+2. When a shared file changes, the action scans all agent directories for symlinks.
+3. Each symlink is resolved canonically. If the resolved target is inside `shared-root`, that agent is marked as a dependent.
+4. All affected agents are unioned with directly changed agents and synced in one batch.
+
+### Repo layout example
+
+```
+.glean/
+  agents/
+    agent-a/
+      spec.yaml
+      skill.md -> ../../common/skills/foo/skill.md     # symlink dependency
+    agent-b/
+      spec.yaml
+      bundle -> ../../common/bundles/bar/               # directory symlink
+    agent-c/
+      spec.yaml
+      local-only.md                                     # no shared deps
+  common/
+    skills/foo/skill.md
+    bundles/bar/config.json
+```
+
+In this layout:
+- Changing `.glean/common/skills/foo/skill.md` triggers a re-sync of `agent-a`
+- Changing `.glean/common/bundles/bar/config.json` triggers a re-sync of `agent-b`
+- Changing both triggers a single combined sync of `agent-a` and `agent-b`
+- `agent-c` is only synced when its own files change directly
+
+### Workflow config with shared-root
+
+```yaml
+on:
+  pull_request:
+    paths:
+      - '.glean/agents/**'
+      - '.glean/common/**'      # trigger on shared resource changes too
+  push:
+    branches: [main]
+    paths:
+      - '.glean/agents/**'
+      - '.glean/common/**'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: askscio/glean-agent-import-action@v1
+        with:
+          instance-url-fe: 'https://your-company.glean.com'
+          instance-url-be: 'https://your-company-be.glean.com'
+          api-token: ${{ secrets.GLEAN_API_TOKEN }}
+          shared-root: '.glean/common'
+```
+
+### Dependency contract
+
+- Only symlink-resolved dependencies are detected (v1).
+- All paths are canonicalized before comparison.
+- Symlinks that resolve outside the repo workspace are rejected.
+- Broken symlinks emit a warning but are not counted as dependencies.
 
 ## API token
 
