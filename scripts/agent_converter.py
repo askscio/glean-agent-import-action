@@ -31,6 +31,67 @@ SKILL_FILENAME = 'SKILL.md'
 
 GLEAN_SEARCH_ACTION_ID = 'Glean Search'
 
+CHAT_MESSAGE_TRIGGER = 'CHAT_MESSAGE'
+INPUT_FORM_TRIGGER = 'INPUT_FORM'
+INPUT_FIELD_TYPES = {'TEXT', 'SELECT', 'DATE'}
+
+
+def convert_input_field_to_json(field: dict) -> dict:
+    """Convert a `trigger.inputFields[i]` spec.yaml entry to the workflow JSON shape.
+
+    The platform persists `displayName` verbatim as the field's internal `name`,
+    so both keys carry the same string in the JSON.
+    """
+    display_name = (field.get('displayName') or field.get('name') or '').strip()
+    field_type = field.get('type', 'TEXT')
+    if field_type not in INPUT_FIELD_TYPES:
+        raise ValueError(
+            f'inputFields[{display_name!r}].type must be one of {sorted(INPUT_FIELD_TYPES)}, got {field_type!r}'
+        )
+
+    wf_field: dict[str, Any] = {
+        'name': display_name,
+        'displayName': display_name,
+        'type': {'type': field_type},
+    }
+    if description := field.get('description'):
+        wf_field['description'] = description
+    if (default_value := field.get('defaultValue')) is not None:
+        wf_field['defaultValue'] = default_value
+    if field.get('optional'):
+        wf_field['optional'] = True
+    if options := field.get('options'):
+        wf_field['options'] = [
+            {'value': opt['value'], 'label': opt['label']} if opt.get('label') else {'value': opt['value']}
+            for opt in options
+        ]
+    return wf_field
+
+
+def convert_input_field_to_spec(field: dict) -> dict:
+    """Convert a workflow JSON `schema.fields[i]` entry to the spec.yaml inputField entry."""
+    display_name = field.get('displayName') or field.get('name') or ''
+    type_obj = field.get('type')
+    field_type = (
+        type_obj.get('type', 'TEXT')
+        if isinstance(type_obj, dict)
+        else (type_obj if isinstance(type_obj, str) else 'TEXT')
+    )
+
+    out: dict[str, Any] = {'displayName': display_name, 'type': field_type}
+    if description := field.get('description'):
+        out['description'] = description
+    if (default_value := field.get('defaultValue')) is not None:
+        out['defaultValue'] = default_value
+    if field.get('optional'):
+        out['optional'] = True
+    if options := field.get('options'):
+        out['options'] = [
+            {'value': opt['value'], 'label': opt['label']} if opt.get('label') else {'value': opt['value']}
+            for opt in options
+        ]
+    return out
+
 
 def _glean_search_config_to_action(glean_search_config: dict | None) -> dict | None:
     """Convert a flat spec.yaml gleanSearchConfig block into the JSON action shape.
@@ -54,6 +115,30 @@ def _glean_search_config_to_action(glean_search_config: dict | None) -> dict | N
         'actionId': GLEAN_SEARCH_ACTION_ID,
         'gleanSearchConfig': {'inclusions': inclusions},
     }
+
+
+def _extract_model_from_file(model: dict | None) -> dict:
+    if not model:
+        return {}
+    fields: dict[str, Any] = {}
+    if 'name' in model and model['name'] is not None:
+        fields['modelSetId'] = model['name']
+    if 'mode' in model and model['mode'] is not None:
+        fields['llmMode'] = model['mode']
+    if 'autoUpgrade' in model and model['autoUpgrade'] is not None:
+        fields['autoUpgradeModel'] = bool(model['autoUpgrade'])
+    return fields
+
+
+def _extract_model_from_json(config: dict) -> dict | None:
+    block: dict[str, Any] = {}
+    if 'modelSetId' in config and config['modelSetId'] is not None:
+        block['name'] = config['modelSetId']
+    if 'llmMode' in config and config['llmMode'] is not None:
+        block['mode'] = config['llmMode']
+    if 'autoUpgradeModel' in config and config['autoUpgradeModel'] is not None:
+        block['autoUpgrade'] = bool(config['autoUpgradeModel'])
+    return block or None
 
 
 def _extract_glean_search_config(actions: list[dict]) -> dict | None:
@@ -183,29 +268,29 @@ class FolderToJsonConverter:
 
         instruction_file = spec.get('instruction_file', INSTRUCTIONS_FILENAME)
         instruction_path = agent_dir / instruction_file
-        instructions = (
-            await read_text(instruction_path)
-            if await aiofiles.os.path.exists(instruction_path)
-            else ''
-        )
+        instructions = await read_text(instruction_path) if await aiofiles.os.path.exists(instruction_path) else ''
 
         schema: dict[str, Any] = {}
         if instructions:
             schema['goal'] = instructions
 
-        agent_config = await self._build_autonomous_agent_config(
-            agent_dir, spec, instructions
-        )
+        agent_config = await self._build_autonomous_agent_config(agent_dir, spec, instructions)
         if agent_config:
             schema['autonomousAgentConfig'] = agent_config
 
-        # supporting chat triggers only for now
-        trigger_config = spec.get('trigger')
-        schema['trigger'] = (
-            {'type': trigger_config.get('type', 'CHAT_MESSAGE')}
-            if trigger_config
-            else {'type': 'CHAT_MESSAGE'}
-        )
+        trigger_spec = spec.get('trigger') or {}
+        trigger_type = trigger_spec.get('type', CHAT_MESSAGE_TRIGGER)
+        schema['trigger'] = {'type': trigger_type}
+
+        if trigger_type == INPUT_FORM_TRIGGER:
+            input_fields = trigger_spec.get('inputFields') or []
+            if input_fields:
+                schema['fields'] = [convert_input_field_to_json(f) for f in input_fields]
+        elif trigger_spec.get('inputFields'):
+            raise ValueError(
+                f'trigger.inputFields is only valid when trigger.type is {INPUT_FORM_TRIGGER!r}; '
+                f'got trigger.type={trigger_type!r}'
+            )
 
         request: dict[str, Any] = {
             'name': spec.get('name', from_kebab_case(agent_name)),
@@ -251,11 +336,15 @@ class FolderToJsonConverter:
         action_servers: list[dict[str, Any]] = []
         for tool_entry in tools_config:
             entry: dict[str, Any] = {'serverId': tool_entry.get('toolProviderId')}
-            tool_names = [
-                t['name'] for t in tool_entry.get('selectedTools', []) if t.get('name')
-            ]
+            tool_names = [t['name'] for t in tool_entry.get('selectedTools', []) if t.get('name')]
             if tool_names:
                 entry['selectedTools'] = tool_names
+            customisation = tool_entry.get('customisationData')
+            if customisation is not None:
+                translated = dict(customisation)
+                if 'skipConfirmation' in translated:
+                    translated['skipUserInteraction'] = translated.pop('skipConfirmation')
+                entry['customisationData'] = translated
             action_servers.append(entry)
         return action_servers
 
@@ -295,6 +384,8 @@ class FolderToJsonConverter:
         if glean_action is not None:
             subagent['actions'] = [glean_action]
 
+        subagent.update(_extract_model_from_file(spec.get('model')))
+
         return subagent
 
     async def _parse_subagents(self, agent_dir: Path, subagent_paths: list[str]) -> list[dict]:
@@ -310,9 +401,7 @@ class FolderToJsonConverter:
 
     # -- Autonomous agent config --
 
-    async def _build_autonomous_agent_config(
-        self, agent_dir: Path, spec: dict, instructions: str
-    ) -> dict:
+    async def _build_autonomous_agent_config(self, agent_dir: Path, spec: dict, instructions: str) -> dict:
         config: dict[str, Any] = {}
 
         glean_action = _glean_search_config_to_action(spec.get('gleanSearchConfig'))
@@ -339,6 +428,8 @@ class FolderToJsonConverter:
 
         if instructions:
             config['instructions'] = instructions
+
+        config.update(_extract_model_from_file(spec.get('model')))
 
         return config
 
@@ -367,16 +458,10 @@ class JsonToFolderConverter:
         if instructions:
             await write_text(agent_dir / INSTRUCTIONS_FILENAME, instructions)
 
-        skill_paths = await self._write_skills(
-            agent_config.get('skills', []), agent_dir / 'skills'
-        )
-        subagent_paths = await self._write_subagents(
-            agent_config.get('subagents', []), agent_dir / 'subagents'
-        )
+        skill_paths = await self._write_skills(agent_config.get('skills', []), agent_dir / 'skills')
+        subagent_paths = await self._write_subagents(agent_config.get('subagents', []), agent_dir / 'subagents')
 
-        spec = self._build_spec(
-            request, schema, agent_config, skill_paths, subagent_paths
-        )
+        spec = self._build_spec(request, schema, agent_config, skill_paths, subagent_paths)
         await write_yaml(agent_dir / SPEC_FILENAME, spec)
 
         return agent_dir
@@ -415,15 +500,22 @@ class JsonToFolderConverter:
         if action_servers:
             spec['tools'] = self._action_servers_to_tools_config(action_servers)
 
-        glean_search_config = _extract_glean_search_config(
-            agent_config.get('actions', [])
-        )
+        glean_search_config = _extract_glean_search_config(agent_config.get('actions', []))
         if glean_search_config is not None:
             spec['gleanSearchConfig'] = glean_search_config
 
-        trigger = schema.get('trigger', {})
-        # supporting chat triggers only for now
-        spec['trigger'] = {'type': trigger.get('type', 'CHAT_MESSAGE')}
+        model_block = _extract_model_from_json(agent_config)
+        if model_block is not None:
+            spec['model'] = model_block
+
+        trigger = schema.get('trigger') or {}
+        trigger_type = trigger.get('type', CHAT_MESSAGE_TRIGGER)
+        trigger_yaml: dict[str, Any] = {'type': trigger_type}
+        if trigger_type == INPUT_FORM_TRIGGER:
+            fields = schema.get('fields') or []
+            if fields:
+                trigger_yaml['inputFields'] = [convert_input_field_to_spec(f) for f in fields]
+        spec['trigger'] = trigger_yaml
 
         icon = request.get('icon')
         if icon:
@@ -436,9 +528,7 @@ class JsonToFolderConverter:
     async def _write_skills(self, skills: list[dict], skills_base_dir: Path) -> list[str]:
         paths: list[str] = []
         for skill in skills:
-            folder_name = to_kebab_case(
-                normalize_name(skill.get('name', 'unnamed skill'))
-            )
+            folder_name = to_kebab_case(normalize_name(skill.get('name', 'unnamed skill')))
             skill_dir = skills_base_dir / folder_name
             await aiofiles.os.makedirs(skill_dir, exist_ok=True)
 
@@ -454,9 +544,7 @@ class JsonToFolderConverter:
     async def _write_subagents(self, subagents: list[dict], subagents_base_dir: Path) -> list[str]:
         paths: list[str] = []
         for subagent in subagents:
-            display_name = normalize_name(
-                subagent.get('name', subagent.get('id', 'unnamed'))
-            )
+            display_name = normalize_name(subagent.get('name', subagent.get('id', 'unnamed')))
             folder_name = to_kebab_case(display_name)
             sub_dir = subagents_base_dir / folder_name
             await aiofiles.os.makedirs(sub_dir, exist_ok=True)
@@ -465,9 +553,7 @@ class JsonToFolderConverter:
             if instruction:
                 await write_text(sub_dir / INSTRUCTIONS_FILENAME, instruction)
 
-            sub_skill_paths = await self._write_skills(
-                subagent.get('skills', []), sub_dir / 'skills'
-            )
+            sub_skill_paths = await self._write_skills(subagent.get('skills', []), sub_dir / 'skills')
 
             sub_spec: dict[str, Any] = {
                 'id': subagent.get('id', ''),
@@ -481,11 +567,13 @@ class JsonToFolderConverter:
             if sub_skill_paths:
                 sub_spec['skills'] = sub_skill_paths
 
-            glean_search_config = _extract_glean_search_config(
-                subagent.get('actions', [])
-            )
+            glean_search_config = _extract_glean_search_config(subagent.get('actions', []))
             if glean_search_config is not None:
                 sub_spec['gleanSearchConfig'] = glean_search_config
+
+            model_block = _extract_model_from_json(subagent)
+            if model_block is not None:
+                sub_spec['model'] = model_block
 
             await write_yaml(sub_dir / SPEC_FILENAME, sub_spec)
             paths.append(f'subagents/{folder_name}/')
@@ -501,6 +589,12 @@ class JsonToFolderConverter:
             selected = server.get('selectedTools', [])
             if selected:
                 entry['selectedTools'] = [{'name': name} for name in selected]
+            customisation = server.get('customisationData')
+            if customisation is not None:
+                translated = dict(customisation)
+                if 'skipUserInteraction' in translated:
+                    translated['skipConfirmation'] = translated.pop('skipUserInteraction')
+                entry['customisationData'] = translated
             tools.append(entry)
         return tools
 
