@@ -118,7 +118,7 @@ while IFS= read -r FOLDER; do
     echo "::error::Agent folder ${FOLDER_PATH} was deleted but cannot be auto-retired. Switch the agent back to UI-managed mode in Agent Builder before removing the folder."
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "deleted", "status": "error", "error": "folder deleted — switch to UI-managed mode to retire"}]' \
       --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" \
+      --arg name "$AGENT_DISPLAY_NAME" 
     HAS_FAILURE=true
     continue
   fi
@@ -128,14 +128,14 @@ while IFS= read -r FOLDER; do
     echo "::error::Cannot determine agent type for ${FOLDER_PATH} — found both spec.yaml (autonomous) and .json files (workflow). Remove one."
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "ambiguous", "mode": "unknown", "status": "error", "error": "both spec.yaml and .json found — remove one to disambiguate"}]' \
       --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" \
+      --arg name "$AGENT_DISPLAY_NAME" 
     HAS_FAILURE=true
     continue
   elif [ "$AGENT_MODE" = "unknown" ]; then
     echo "::error::Cannot determine agent type for ${FOLDER_PATH} — expected either spec.yaml (autonomous agent) or a .json spec file (workflow agent)."
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "unknown", "status": "error", "error": "no spec.yaml or .json found — add one"}]' \
       --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" \
+      --arg name "$AGENT_DISPLAY_NAME" 
     HAS_FAILURE=true
     continue
   fi
@@ -155,7 +155,7 @@ while IFS= read -r FOLDER; do
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing glean-sync.yaml — add one with at least agent-id"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
-      --arg agentMode "$AGENT_MODE" \
+      --arg agentMode "$AGENT_MODE" 
     HAS_FAILURE=true
     continue
   fi
@@ -174,7 +174,7 @@ while IFS= read -r FOLDER; do
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing agent-id — set id in spec.yaml or add agent-id to glean-sync.yaml"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
-      --arg agentMode "$AGENT_MODE" \
+      --arg agentMode "$AGENT_MODE" 
     HAS_FAILURE=true
     continue
   fi
@@ -187,7 +187,7 @@ while IFS= read -r FOLDER; do
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
-      --arg err "invalid sync-mode value '${EFFECTIVE_SYNC_MODE}' in sync-mode field of glean-sync.yaml — must be staged or published" \
+      --arg err "invalid sync-mode value '${EFFECTIVE_SYNC_MODE}' in sync-mode field of glean-sync.yaml — must be staged or published" 
     HAS_FAILURE=true
     continue
   fi
@@ -220,7 +220,7 @@ while IFS= read -r FOLDER; do
       append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "multiple .json files found — keep exactly one spec file"}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
-        --arg agentMode "$AGENT_MODE" \
+        --arg agentMode "$AGENT_MODE" 
       HAS_FAILURE=true
       continue
     fi
@@ -233,7 +233,7 @@ while IFS= read -r FOLDER; do
       append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "invalid JSON in spec file"}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
-        --arg agentMode "$AGENT_MODE" \
+        --arg agentMode "$AGENT_MODE" 
       HAS_FAILURE=true
       continue
     fi
@@ -258,7 +258,7 @@ while IFS= read -r FOLDER; do
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
         --arg mode "$MODE" \
-        --arg err "Converter failed: $CONVERTER_ERR" \
+        --arg err "Converter failed: $CONVERTER_ERR" 
       HAS_FAILURE=true
       continue
     fi
@@ -269,7 +269,7 @@ while IFS= read -r FOLDER; do
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
-        --arg mode "$MODE" \
+        --arg mode "$MODE" 
       HAS_FAILURE=true
       continue
     fi
@@ -284,7 +284,7 @@ while IFS= read -r FOLDER; do
           --arg name "$AGENT_DISPLAY_NAME" \
           --arg agentMode "$AGENT_MODE" \
           --arg mode "$MODE" \
-          --arg err "Agent ID mismatch: glean-sync.yaml='$AGENT_ID' spec.yaml='$SPEC_YAML_ID'" \
+          --arg err "Agent ID mismatch: glean-sync.yaml='$AGENT_ID' spec.yaml='$SPEC_YAML_ID'" 
         HAS_FAILURE=true
         continue
       fi
@@ -324,7 +324,7 @@ while IFS= read -r FOLDER; do
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
-      --arg err "network error: $CURL_ERR" \
+      --arg err "network error: $CURL_ERR" 
     HAS_FAILURE=true
     continue
   fi
@@ -336,7 +336,7 @@ while IFS= read -r FOLDER; do
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
-      --arg msg "$MESSAGE" \
+      --arg msg "$MESSAGE" 
   else
     RESP_BODY=$(cat "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "no response body")
     echo "::error::Failed to sync agent $AGENT_ID (HTTP $HTTP_CODE): $RESP_BODY"
@@ -345,7 +345,7 @@ while IFS= read -r FOLDER; do
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
-      --arg err "HTTP $HTTP_CODE" \
+      --arg err "HTTP $HTTP_CODE" 
     HAS_FAILURE=true
   fi
 done < <(echo "$FOLDERS_JSON" | jq -r '.[]')
