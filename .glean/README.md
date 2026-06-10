@@ -14,7 +14,7 @@ Link shared resources into your agent folder with symlinks:
 
 ```bash
 mkdir -p .glean/agents/my-agent/skills
-ln -s ../../common/skills/example-protocol .glean/agents/my-agent/skills/example-protocol
+ln -s ../../../common/skills/example-protocol .glean/agents/my-agent/skills/example-protocol
 ```
 
 When `.glean/common/**` changes on a PR, the sync workflow re-syncs all agents that symlink to the changed files.
