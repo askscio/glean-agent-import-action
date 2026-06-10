@@ -25,6 +25,10 @@ inputs:
     description: 'Default sync mode for agents on push to master: "staged" (default) or "published". Can be overridden per-agent via the sync-mode field in glean-sync.yaml.'
     required: false
     default: 'staged'
+  pr-head-ref:
+    description: 'PR head branch ref for retry link generation on workflow_dispatch (usually resolved from pr_number in the caller workflow).'
+    required: false
+    default: ''
 outputs:
   synced-agents:
     description: 'JSON array of synced agent summaries [{agentId, mode, status}]'
@@ -104,6 +108,7 @@ runs:
         INSTANCE_URL_BE: ${{ inputs.instance-url-be }}
         FOLDERS_JSON: ${{ steps.detect.outputs.folders }}
         FORCE_DRAFT: ${{ github.event.inputs.is_draft }}
+        PR_RETRY: ${{ github.event.inputs.pr_number }}
         PR_AUTHOR: ${{ steps.pr-author.outputs.author }}
       run: ${{ github.action_path }}/scripts/sync-agents.sh
 
@@ -114,7 +119,10 @@ runs:
       # comment on and we'd just be reading a missing results file.
       if: |
         always()
-        && github.event_name == 'pull_request'
+        && (
+          github.event_name == 'pull_request'
+          || (github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number != '')
+        )
         && steps.detect.outcome == 'success'
         && steps.detect.outputs.folders != ''
         && steps.detect.outputs.folders != '[]'
@@ -123,8 +131,9 @@ runs:
         GH_TOKEN: ${{ github.token }}
         INSTANCE_URL_FE: ${{ inputs.instance-url-fe }}
         INSTANCE_URL_BE: ${{ inputs.instance-url-be }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
         REPO: ${{ github.repository }}
+        SYNC_WORKFLOW_FILE: glean-agent-sync.yml
       run: ${{ github.action_path }}/scripts/comment-pr.sh
 
     - name: Comment merged PR with run links

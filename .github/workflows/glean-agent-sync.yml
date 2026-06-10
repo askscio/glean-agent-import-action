@@ -8,11 +8,14 @@ on:
       - '.glean/common/**'
       - 'action.yml'
       - 'scripts/**'
+      - '.github/workflows/glean-agent-sync.yml'
   push:
     branches: [main]
     paths:
       - '.glean/agents/**'
       - '.glean/common/**'
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       agent_folder:
@@ -24,19 +27,67 @@ on:
         type: boolean
         required: false
         default: false
+      pr_number:
+        description: 'PR number to update with preview links (required for PR retries)'
+        required: false
+        default: ''
+      pr_head_ref:
+        description: 'PR head branch (optional; derived from pr_number when omitted)'
+        required: false
+        default: ''
 
 jobs:
+  retry-from-comment:
+    if: |
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request
+      && github.event.comment.user.type != 'Bot'
+      && startsWith(github.event.comment.body, '/glean-retry ')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Dispatch workflow retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          AGENT_FOLDER="${COMMENT_BODY#/glean-retry }"
+          AGENT_FOLDER="${AGENT_FOLDER%% *}"
+          PR_NUMBER="${{ github.event.issue.number }}"
+          HEAD_REF=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq .head.ref)
+          gh workflow run glean-agent-sync.yml \
+            --ref "$HEAD_REF" \
+            -f "agent_folder=${AGENT_FOLDER}" \
+            -f "is_draft=true" \
+            -f "pr_number=${PR_NUMBER}"
+
   sync:
+    if: github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
+      - name: Resolve PR head for retry
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number != ''
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.inputs.pr_number }}")
+          echo "head_ref=$(echo "$PR_JSON" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$PR_JSON" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head_sha || github.ref }}
 
       - name: Fetch base ref for diff
+        if: github.event.inputs.agent_folder == ''
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1
@@ -47,6 +98,7 @@ jobs:
       - uses: ./
         with:
           instance-url-fe: https://app.glean.com
-          instance-url-be: https://scio-prod-be.glean.com/
+          instance-url-be: https://salessavvy-test-be.glean.com/
           api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
           shared-root: .glean/common
+          pr-head-ref: ${{ steps.pr.outputs.head_ref }}
