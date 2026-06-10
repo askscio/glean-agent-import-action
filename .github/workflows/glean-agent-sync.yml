@@ -1,0 +1,45 @@
+name: Glean Agent Sync
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: ['.glean/agents/**', 'action.yml', 'scripts/**']
+  push:
+    branches: [main]
+    paths: ['.glean/agents/**']
+  workflow_dispatch:
+    inputs:
+      agent_folder:
+        description: 'Agent folder to sync (e.g. example-agent). Leave empty to sync all.'
+        required: false
+        default: ''
+      is_draft:
+        description: 'Trigger draft preview (true) or merge commit sync (false)'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base ref for diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            git fetch origin "${{ github.event.before }}" --depth=1 || true
+          fi
+
+      - uses: ./
+        with:
+          instance-url-fe: https://app.glean.com
+          instance-url-be: https://scio-prod-be.glean.com/
+          api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
