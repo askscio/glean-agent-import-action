@@ -112,6 +112,7 @@ runs:
         INSTANCE_URL_BE: ${{ inputs.instance-url-be }}
         FOLDERS_JSON: ${{ steps.detect.outputs.folders }}
         FORCE_DRAFT: ${{ github.event.inputs.is_draft }}
+        PR_RETRY: ${{ github.event.inputs.pr_number }}
         PR_AUTHOR: ${{ steps.pr-author.outputs.author }}
       run: ${{ github.action_path }}/scripts/sync-agents.sh
 

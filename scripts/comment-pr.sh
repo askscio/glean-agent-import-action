@@ -58,6 +58,10 @@ done < <(jq -c '.[]' "$RESULTS_FILE")
   echo "|-------|--------|---------|"
   echo -n "$TABLE_ROWS"
   echo ""
+  if [ -n "${SYNC_WORKFLOW_FILE:-}" ] && grep -q ':x: Draft Preview' "$RUNNER_TEMP/agent-sync-comment.md"; then
+    echo "_Retry: click **[Retry]** above, or comment \`/glean-retry <agent-folder>\` on this PR._"
+    echo ""
+  fi
   echo "*Updated by glean-io/agent-sync-action*"
 } > "$RUNNER_TEMP/agent-sync-comment.md"
 

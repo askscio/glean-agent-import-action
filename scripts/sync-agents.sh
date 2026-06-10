@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Required env: API_TOKEN, AGENT_DIR, EVENT_NAME, COMMIT_SHA, INSTANCE_URL_BE, FOLDERS_JSON
-# Optional env: DEFAULT_MESSAGE (from PR title or git commit subject), DEFAULT_SYNC_MODE, FORCE_DRAFT, PR_AUTHOR
+# Optional env: DEFAULT_MESSAGE (from PR title or git commit subject), DEFAULT_SYNC_MODE, FORCE_DRAFT, PR_AUTHOR, PR_RETRY
 
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=github_output.sh
@@ -196,6 +196,9 @@ while IFS= read -r FOLDER; do
   PUBLISH=false
   MODE="draft_preview"
   if [ "${FORCE_DRAFT:-false}" = "true" ]; then
+    IS_DRAFT=true
+    MODE="draft_preview"
+  elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${PR_RETRY:-}" ]; then
     IS_DRAFT=true
     MODE="draft_preview"
   elif [ "$EVENT_NAME" != "pull_request" ]; then

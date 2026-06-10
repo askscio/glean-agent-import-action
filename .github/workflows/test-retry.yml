@@ -14,6 +14,8 @@ on:
     paths:
       - '.glean/agents/**'
       - '.glean/common/**'
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       agent_folder:
@@ -35,7 +37,34 @@ on:
         default: ''
 
 jobs:
+  retry-from-comment:
+    if: |
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/glean-retry ')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Dispatch workflow retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          AGENT_FOLDER="${COMMENT_BODY#/glean-retry }"
+          AGENT_FOLDER="${AGENT_FOLDER%% *}"
+          PR_NUMBER="${{ github.event.issue.number }}"
+          HEAD_REF=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq .head.ref)
+          gh workflow run test-retry.yml \
+            --ref "$HEAD_REF" \
+            -f "agent_folder=${AGENT_FOLDER}" \
+            -f "is_draft=true" \
+            -f "pr_number=${PR_NUMBER}"
+
   sync:
+    if: github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,7 +97,7 @@ jobs:
       - uses: ./
         with:
           instance-url-fe: https://app.glean.com
-          instance-url-be: https://scio-prod-be.glean.com/
+          instance-url-be: https://salessavvy-test-be.glean.com/
           api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
           shared-root: .glean/common
           sync-workflow-file: test-retry.yml
