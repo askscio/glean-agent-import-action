@@ -404,9 +404,14 @@ class FolderToJsonConverter:
     async def _build_autonomous_agent_config(self, agent_dir: Path, spec: dict, instructions: str) -> dict:
         config: dict[str, Any] = {}
 
+        actions: list[dict[str, Any]] = [dict(action) for action in (spec.get('actions') or [])]
         glean_action = _glean_search_config_to_action(spec.get('gleanSearchConfig'))
-        if glean_action is not None:
-            config['actions'] = [glean_action]
+        if glean_action is not None and not any(
+            action.get('actionId') == GLEAN_SEARCH_ACTION_ID for action in actions
+        ):
+            actions.append(glean_action)
+        if actions:
+            config['actions'] = actions
 
         tools_config = spec.get('tools', [])
         if tools_config:
@@ -500,7 +505,14 @@ class JsonToFolderConverter:
         if action_servers:
             spec['tools'] = self._action_servers_to_tools_config(action_servers)
 
-        glean_search_config = _extract_glean_search_config(agent_config.get('actions', []))
+        json_actions = agent_config.get('actions', [])
+        native_actions = [
+            action for action in json_actions if action.get('actionId') != GLEAN_SEARCH_ACTION_ID
+        ]
+        if native_actions:
+            spec['actions'] = native_actions
+
+        glean_search_config = _extract_glean_search_config(json_actions)
         if glean_search_config is not None:
             spec['gleanSearchConfig'] = glean_search_config
 
