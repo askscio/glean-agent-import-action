@@ -1,0 +1,41 @@
+id: 302f462f7adb4675b111cc486f826bab
+
+name: Glean Sync Action Test Bench
+
+description: >
+  Test agent for locally validating Glean sync action changes across platform
+  actions, MCP tools, and skills.
+
+instruction_file: instructions.md
+
+skills:
+  - skills/example-protocol/
+  - skills/meeting-briefing/
+
+actions:
+  - actionId: Web Search
+    customisationData: {}
+
+gleanSearchConfig: {}
+
+tools:
+  - toolProviderId: ac7cc5c170df4fd583de34f1aa1c1ec3
+    selectedTools:
+      - name: Actions List
+      - name: Actions Get
+      - name: Add Issue Comment
+    customisationData: {}
+
+model:
+  name: GPT_5_4_MS
+  mode: ADVANCED
+  autoUpgrade: true
+
+trigger:
+  type: CHAT_MESSAGE
+
+icon:
+  backgroundColor: var(--theme-brand-light-blue-50)
+  color: '#333'
+  iconType: GLYPH
+  name: rocket-2
