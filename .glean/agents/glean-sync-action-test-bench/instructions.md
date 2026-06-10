@@ -15,4 +15,4 @@ You have access to the following tool categories for testing:
 
 ## Retry sync dogfood
 
-Per-agent retry links in PR comments dispatch the **Test Retry** workflow for this agent folder only.
+Per-agent retry links in PR comments dispatch the **Glean Agent Sync** workflow for this agent folder only.

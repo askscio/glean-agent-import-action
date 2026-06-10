@@ -1,4 +1,4 @@
-name: Test Retry
+name: Glean Agent Sync
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
       - '.glean/common/**'
       - 'action.yml'
       - 'scripts/**'
-      - '.github/workflows/test-retry.yml'
+      - '.github/workflows/glean-agent-sync.yml'
   push:
     branches: [main]
     paths:
@@ -41,6 +41,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment'
       && github.event.issue.pull_request
+      && github.event.comment.user.type != 'Bot'
       && startsWith(github.event.comment.body, '/glean-retry ')
     runs-on: ubuntu-latest
     permissions:
@@ -57,7 +58,7 @@ jobs:
           AGENT_FOLDER="${AGENT_FOLDER%% *}"
           PR_NUMBER="${{ github.event.issue.number }}"
           HEAD_REF=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq .head.ref)
-          gh workflow run test-retry.yml \
+          gh workflow run glean-agent-sync.yml \
             --ref "$HEAD_REF" \
             -f "agent_folder=${AGENT_FOLDER}" \
             -f "is_draft=true" \
@@ -100,5 +101,4 @@ jobs:
           instance-url-be: https://salessavvy-test-be.glean.com/
           api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
           shared-root: .glean/common
-          sync-workflow-file: test-retry.yml
           pr-head-ref: ${{ steps.pr.outputs.head_ref }}

@@ -25,10 +25,6 @@ inputs:
     description: 'Default sync mode for agents on push to master: "staged" (default) or "published". Can be overridden per-agent via the sync-mode field in glean-sync.yaml.'
     required: false
     default: 'staged'
-  sync-workflow-file:
-    description: 'Workflow filename for per-agent retry links in PR comments (e.g. glean-agent-sync.yml). Omit to hide retry links.'
-    required: false
-    default: ''
   pr-head-ref:
     description: 'PR head branch ref for retry link generation on workflow_dispatch (usually resolved from pr_number in the caller workflow).'
     required: false
@@ -136,9 +132,8 @@ runs:
         INSTANCE_URL_FE: ${{ inputs.instance-url-fe }}
         INSTANCE_URL_BE: ${{ inputs.instance-url-be }}
         PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
-        PR_HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.pr-head-ref || github.event.inputs.pr_head_ref }}
         REPO: ${{ github.repository }}
-        SYNC_WORKFLOW_FILE: ${{ inputs.sync-workflow-file }}
+        SYNC_WORKFLOW_FILE: glean-agent-sync.yml
       run: ${{ github.action_path }}/scripts/comment-pr.sh
 
     - name: Comment merged PR with run links
