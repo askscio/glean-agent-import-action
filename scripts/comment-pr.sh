@@ -2,12 +2,27 @@
 set -euo pipefail
 
 # Required env: GH_TOKEN, INSTANCE_URL_FE, INSTANCE_URL_BE, PR_NUMBER, REPO
+# Optional env: SYNC_WORKFLOW_FILE, PR_HEAD_REF (enables per-agent retry links)
 
 INSTANCE_URL_FE="${INSTANCE_URL_FE%/}"
 INSTANCE_URL_BE="${INSTANCE_URL_BE%/}"
 BE_ENCODED=$(printf %s "$INSTANCE_URL_BE" | jq -sRr @uri)
 MARKER="<!-- glean-agent-sync-action -->"
 RESULTS_FILE="$RUNNER_TEMP/agent-sync-results.json"
+
+build_retry_link() {
+  local folder="$1"
+  [ -n "${SYNC_WORKFLOW_FILE:-}" ] || return 0
+  [ -n "${PR_NUMBER:-}" ] || return 0
+
+  local query ref_param=""
+  query=$(printf 'agent_folder=%s&is_draft=true&pr_number=%s' "$folder" "$PR_NUMBER" | jq -sRr @uri)
+  if [ -n "${PR_HEAD_REF:-}" ]; then
+    ref_param="ref=$(printf %s "$PR_HEAD_REF" | jq -sRr @uri)&"
+  fi
+  printf '[Retry](https://github.com/%s/actions/workflows/%s/dispatch?%squery=%s)' \
+    "$REPO" "$SYNC_WORKFLOW_FILE" "$ref_param" "$query"
+}
 
 if [ ! -f "$RESULTS_FILE" ]; then
   echo "::warning::No sync results file found — sync step may have crashed before writing results."
@@ -18,6 +33,7 @@ TABLE_ROWS=""
 while IFS= read -r ROW; do
   AID=$(echo "$ROW" | jq -r '.agentId')
   ANAME=$(echo "$ROW" | jq -r '.agentName // .agentId')
+  FOLDER=$(echo "$ROW" | jq -r '.folder // .agentId')
   STATUS=$(echo "$ROW" | jq -r '.status')
 
   if [ "$STATUS" = "success" ]; then
@@ -25,7 +41,10 @@ while IFS= read -r ROW; do
     LINK="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${AID}/edit?qe=${BE_ENCODED})"
   else
     STATUS_TEXT=":x: Draft Preview"
-    LINK=$(echo "$ROW" | jq -r '.error // "Failed"')
+    ERR=$(echo "$ROW" | jq -r '.error // "Failed"')
+    LINK="$ERR"
+    RETRY=$(build_retry_link "$FOLDER")
+    [ -n "$RETRY" ] && LINK="${LINK} · ${RETRY}"
   fi
 
   TABLE_ROWS+="| \`${ANAME}\` | ${STATUS_TEXT} | ${LINK} |"$'\n'

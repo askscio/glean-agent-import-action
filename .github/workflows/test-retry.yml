@@ -1,4 +1,4 @@
-name: Glean Agent Sync
+name: Test Retry
 
 on:
   pull_request:
@@ -8,6 +8,7 @@ on:
       - '.glean/common/**'
       - 'action.yml'
       - 'scripts/**'
+      - '.github/workflows/test-retry.yml'
   push:
     branches: [main]
     paths:
@@ -24,6 +25,14 @@ on:
         type: boolean
         required: false
         default: false
+      pr_number:
+        description: 'PR number to update with preview links (required for PR retries)'
+        required: false
+        default: ''
+      pr_head_ref:
+        description: 'PR head branch (optional; derived from pr_number when omitted)'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -32,11 +41,23 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Resolve PR head for retry
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number != ''
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.inputs.pr_number }}")
+          echo "head_ref=$(echo "$PR_JSON" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$PR_JSON" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head_sha || github.ref }}
 
       - name: Fetch base ref for diff
+        if: github.event.inputs.agent_folder == ''
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1
@@ -50,3 +71,5 @@ jobs:
           instance-url-be: https://scio-prod-be.glean.com/
           api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
           shared-root: .glean/common
+          sync-workflow-file: test-retry.yml
+          pr-head-ref: ${{ steps.pr.outputs.head_ref }}

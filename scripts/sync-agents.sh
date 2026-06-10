@@ -15,6 +15,11 @@ INSTANCE_URL_BE="${INSTANCE_URL_BE%/}"
 RESULTS="[]"
 HAS_FAILURE=false
 
+append_result() {
+  local filter="$1"
+  shift
+  RESULTS=$(echo "$RESULTS" | jq -c "$@" "$filter" | jq -c --arg folder "$FOLDER" '.[-1] |= . + {folder: $folder}')
+}
 
 build_sync_request_workflow() {
   local agent_id="$1"
@@ -111,10 +116,9 @@ while IFS= read -r FOLDER; do
 
   if [ ! -d "$FOLDER_PATH" ]; then
     echo "::error::Agent folder ${FOLDER_PATH} was deleted but cannot be auto-retired. Switch the agent back to UI-managed mode in Agent Builder before removing the folder."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "deleted", "status": "error", "error": "folder deleted — switch to UI-managed mode to retire"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "deleted", "status": "error", "error": "folder deleted — switch to UI-managed mode to retire"}]')
     HAS_FAILURE=true
     continue
   fi
@@ -122,18 +126,16 @@ while IFS= read -r FOLDER; do
   AGENT_MODE=$(detect_agent_mode "$FOLDER_PATH")
   if [ "$AGENT_MODE" = "ambiguous" ]; then
     echo "::error::Cannot determine agent type for ${FOLDER_PATH} — found both spec.yaml (autonomous) and .json files (workflow). Remove one."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "ambiguous", "mode": "unknown", "status": "error", "error": "both spec.yaml and .json found — remove one to disambiguate"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": "ambiguous", "mode": "unknown", "status": "error", "error": "both spec.yaml and .json found — remove one to disambiguate"}]')
     HAS_FAILURE=true
     continue
   elif [ "$AGENT_MODE" = "unknown" ]; then
     echo "::error::Cannot determine agent type for ${FOLDER_PATH} — expected either spec.yaml (autonomous agent) or a .json spec file (workflow agent)."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "unknown", "status": "error", "error": "no spec.yaml or .json found — add one"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "unknown", "status": "error", "error": "no spec.yaml or .json found — add one"}]')
     HAS_FAILURE=true
     continue
   fi
@@ -150,11 +152,10 @@ while IFS= read -r FOLDER; do
     AGENT_SYNC_MODE=$(yq '."sync-mode" // ""' "$SYNC_FILE")
   elif [ "$AGENT_MODE" = "workflow" ]; then
     echo "::error::Missing glean-sync.yaml in ${FOLDER_PATH} — workflow agents require a glean-sync.yaml with at least an agent-id field."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing glean-sync.yaml — add one with at least agent-id"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing glean-sync.yaml — add one with at least agent-id"}]')
     HAS_FAILURE=true
     continue
   fi
@@ -170,11 +171,10 @@ while IFS= read -r FOLDER; do
 
   if [ -z "$AGENT_ID" ]; then
     echo "::error::Missing agent-id in ${FOLDER} — set the id field in spec.yaml or add a glean-sync.yaml with an agent-id field."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing agent-id — set id in spec.yaml or add agent-id to glean-sync.yaml"}]' \
       --arg aid "$FOLDER" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing agent-id — set id in spec.yaml or add agent-id to glean-sync.yaml"}]')
     HAS_FAILURE=true
     continue
   fi
@@ -183,12 +183,11 @@ while IFS= read -r FOLDER; do
   EFFECTIVE_SYNC_MODE="${AGENT_SYNC_MODE:-${DEFAULT_SYNC_MODE}}"
   if [ "$EFFECTIVE_SYNC_MODE" != "staged" ] && [ "$EFFECTIVE_SYNC_MODE" != "published" ]; then
     echo "::error::Invalid sync-mode value '${EFFECTIVE_SYNC_MODE}' in ${FOLDER} (sync-mode field of glean-sync.yaml) — must be 'staged' or 'published'."
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": $err}]' \
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg err "invalid sync-mode value '${EFFECTIVE_SYNC_MODE}' in sync-mode field of glean-sync.yaml — must be staged or published" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": $err}]')
     HAS_FAILURE=true
     continue
   fi
@@ -218,11 +217,10 @@ while IFS= read -r FOLDER; do
 
     if [ "${#JSON_SPEC_FILES[@]}" -gt 1 ]; then
       echo "::error::Multiple .json files found in ${FOLDER_PATH} — exactly one spec file is allowed per agent folder."
-      RESULTS=$(echo "$RESULTS" | jq -c \
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "multiple .json files found — keep exactly one spec file"}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
-        '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "multiple .json files found — keep exactly one spec file"}]')
       HAS_FAILURE=true
       continue
     fi
@@ -232,11 +230,10 @@ while IFS= read -r FOLDER; do
     SPEC_JSON=$(cat "$SPEC_FILE")
     if ! echo "$SPEC_JSON" | jq empty 2>/dev/null; then
       echo "::error::Invalid JSON in ${SPEC_FILE}"
-      RESULTS=$(echo "$RESULTS" | jq -c \
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "invalid JSON in spec file"}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
-        '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "invalid JSON in spec file"}]')
       HAS_FAILURE=true
       continue
     fi
@@ -256,25 +253,23 @@ while IFS= read -r FOLDER; do
     if [ $CONVERTER_EXIT -ne 0 ]; then
       CONVERTER_ERR=$(cat "$CONVERTER_STDERR_FILE" 2>/dev/null || echo "unknown converter error")
       echo "::error::Converter failed for ${FOLDER} — ${CONVERTER_ERR}"
-      RESULTS=$(echo "$RESULTS" | jq -c \
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
         --arg mode "$MODE" \
         --arg err "Converter failed: $CONVERTER_ERR" \
-        '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]')
       HAS_FAILURE=true
       continue
     fi
 
     if ! echo "$CONVERTER_OUTPUT" | jq empty 2>/dev/null; then
       echo "::error::Converter produced invalid JSON for ${FOLDER} — check spec.yaml and instructions.md"
-      RESULTS=$(echo "$RESULTS" | jq -c \
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "converter produced invalid JSON"}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
         --arg mode "$MODE" \
-        '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "converter produced invalid JSON"}]')
       HAS_FAILURE=true
       continue
     fi
@@ -284,13 +279,12 @@ while IFS= read -r FOLDER; do
       SPEC_YAML_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
       if [ -n "$SPEC_YAML_ID" ] && [ "$SPEC_YAML_ID" != "$AGENT_ID" ]; then
         echo "::error::Agent ID mismatch in ${FOLDER} — glean-sync.yaml has '${AGENT_ID}' but spec.yaml has '${SPEC_YAML_ID}'. These must match."
-        RESULTS=$(echo "$RESULTS" | jq -c \
+        append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
           --arg aid "$AGENT_ID" \
           --arg name "$AGENT_DISPLAY_NAME" \
           --arg agentMode "$AGENT_MODE" \
           --arg mode "$MODE" \
           --arg err "Agent ID mismatch: glean-sync.yaml='$AGENT_ID' spec.yaml='$SPEC_YAML_ID'" \
-          '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]')
         HAS_FAILURE=true
         continue
       fi
@@ -325,36 +319,33 @@ while IFS= read -r FOLDER; do
     CURL_ERR=$(tr '\n' ' ' < "$CURL_ERR_FILE" 2>/dev/null | sed 's/[[:space:]]*$//')
     [ -z "$CURL_ERR" ] && CURL_ERR="curl exited $CURL_EXIT"
     echo "::error::Network error syncing agent $AGENT_ID: $CURL_ERR"
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
       --arg err "network error: $CURL_ERR" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]')
     HAS_FAILURE=true
     continue
   fi
 
   if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
     echo "  Synced successfully (HTTP $HTTP_CODE)"
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "status": "success"}]' \
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
       --arg msg "$MESSAGE" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "status": "success"}]')
   else
     RESP_BODY=$(cat "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "no response body")
     echo "::error::Failed to sync agent $AGENT_ID (HTTP $HTTP_CODE): $RESP_BODY"
-    RESULTS=$(echo "$RESULTS" | jq -c \
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
       --arg err "HTTP $HTTP_CODE" \
-      '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]')
     HAS_FAILURE=true
   fi
 done < <(echo "$FOLDERS_JSON" | jq -r '.[]')

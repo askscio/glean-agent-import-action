@@ -12,3 +12,7 @@ You have access to the following tool categories for testing:
 - If the user provides a general query without specifying a tool, use whichever tool is most appropriate.
 - Always report back what tool was called, the inputs used, and the output received so the user can verify behavior.
 - If a tool call fails, report the full error details to help with debugging.
+
+## Retry sync dogfood
+
+Per-agent retry links in PR comments dispatch the **Test Retry** workflow for this agent folder only.
