@@ -141,6 +141,21 @@ def _extract_model_from_json(config: dict) -> dict | None:
     return block or None
 
 
+def _validate_model_selection(agent_config: dict) -> None:
+    """Require the agent and every subagent to either pin a model set (`model.name`) or enable
+    auto-upgrade (`model.autoUpgrade`), so the executor always has a model to run with."""
+
+    def _require(config: dict, label: str) -> None:
+        if config.get('modelSetId'):
+            return
+        if 'autoUpgradeModel' in config and not config['autoUpgradeModel']:
+            raise ValueError(f'{label} must specify a model (model.name) or enable auto-upgrade (model.autoUpgrade)')
+
+    _require(agent_config, 'agent')
+    for subagent in agent_config.get('subagents', []):
+        _require(subagent, f'subagent {subagent.get("id", "")!r}')
+
+
 def _extract_glean_search_config(actions: list[dict]) -> dict | None:
     """Find the Glean Search action and return its inclusions flattened for spec.yaml.
 
@@ -152,7 +167,7 @@ def _extract_glean_search_config(actions: list[dict]) -> dict | None:
     for action in actions:
         if action.get('actionId') != GLEAN_SEARCH_ACTION_ID:
             continue
-        inclusions = action.get('gleanSearchConfig', {}).get('inclusions', {})
+        inclusions = action.get('gleanSearchConfig', {}).get('inclusions') or {}
         flat: dict[str, Any] = {}
         if inclusions.get('datasourceInstances'):
             flat['datasourceInstances'] = list(inclusions['datasourceInstances'])
@@ -292,6 +307,9 @@ class FolderToJsonConverter:
                 f'got trigger.type={trigger_type!r}'
             )
 
+        if agent_config:
+            _validate_model_selection(agent_config)
+
         request: dict[str, Any] = {
             'name': spec.get('name', from_kebab_case(agent_name)),
             'description': spec.get('description', ''),
@@ -404,14 +422,9 @@ class FolderToJsonConverter:
     async def _build_autonomous_agent_config(self, agent_dir: Path, spec: dict, instructions: str) -> dict:
         config: dict[str, Any] = {}
 
-        actions: list[dict[str, Any]] = [dict(action) for action in (spec.get('actions') or [])]
         glean_action = _glean_search_config_to_action(spec.get('gleanSearchConfig'))
-        if glean_action is not None and not any(
-            action.get('actionId') == GLEAN_SEARCH_ACTION_ID for action in actions
-        ):
-            actions.append(glean_action)
-        if actions:
-            config['actions'] = actions
+        if glean_action is not None:
+            config['actions'] = [glean_action]
 
         tools_config = spec.get('tools', [])
         if tools_config:
@@ -505,14 +518,7 @@ class JsonToFolderConverter:
         if action_servers:
             spec['tools'] = self._action_servers_to_tools_config(action_servers)
 
-        json_actions = agent_config.get('actions', [])
-        native_actions = [
-            action for action in json_actions if action.get('actionId') != GLEAN_SEARCH_ACTION_ID
-        ]
-        if native_actions:
-            spec['actions'] = native_actions
-
-        glean_search_config = _extract_glean_search_config(json_actions)
+        glean_search_config = _extract_glean_search_config(agent_config.get('actions', []))
         if glean_search_config is not None:
             spec['gleanSearchConfig'] = glean_search_config
 
