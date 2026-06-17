@@ -29,6 +29,8 @@ SPEC_FILENAME = 'spec.yaml'
 INSTRUCTIONS_FILENAME = 'instructions.md'
 SKILL_FILENAME = 'SKILL.md'
 
+SKILL_EXCLUDED_TOP_LEVEL_FILES = {SKILL_FILENAME, 'glean.yaml', 'metadata.textpb'}
+
 GLEAN_SEARCH_ACTION_ID = 'Glean Search'
 
 CHAT_MESSAGE_TRIGGER = 'CHAT_MESSAGE'
@@ -187,6 +189,13 @@ async def read_text(path: Path) -> str:
         return (await f.read()).strip()
 
 
+async def read_file_verbatim(path: Path) -> str:
+    """Read a bundled skill file without stripping, replacing invalid UTF-8 so that
+    arbitrary text files round-trip cleanly through the JSON `content.files` array."""
+    async with aiofiles.open(path, mode='rb') as f:
+        return (await f.read()).decode('utf-8', errors='replace')
+
+
 async def read_yaml(path: Path) -> dict:
     async with aiofiles.open(path, encoding='utf-8') as f:
         content = await f.read()
@@ -197,6 +206,14 @@ async def write_text(path: Path, content: str) -> None:
     await aiofiles.os.makedirs(path.parent, exist_ok=True)
     async with aiofiles.open(path, mode='w', encoding='utf-8') as f:
         await f.write(content.rstrip() + '\n')
+
+
+async def write_skill_file(path: Path, content: str) -> None:
+    """Write a bundled skill file verbatim (creating nested dirs), preserving content
+    exactly as stored in the JSON `content.files` array."""
+    await aiofiles.os.makedirs(path.parent, exist_ok=True)
+    async with aiofiles.open(path, mode='w', encoding='utf-8') as f:
+        await f.write(content)
 
 
 # PyYAML defaults to flat list indentation and unquoted multiline strings.
@@ -258,6 +275,20 @@ def from_kebab_case(folder_name: str) -> str:
     return ' '.join(p.capitalize() for p in parts) if parts else folder_name
 
 
+def _safe_skill_file_dest(skill_dir: Path, rel_path: str) -> Path | None:
+    """Resolve a bundled file's relative path against the skill dir, rejecting absolute
+    paths or `..` traversal that would write outside the skill folder."""
+    if not rel_path:
+        return None
+    candidate = Path(rel_path)
+    if candidate.is_absolute():
+        return None
+    dest = (skill_dir / candidate).resolve()
+    if dest == skill_dir.resolve() or skill_dir.resolve() not in dest.parents:
+        return None
+    return dest
+
+
 # ---------------------------------------------------------------------------
 # Folder → JSON
 # ---------------------------------------------------------------------------
@@ -315,8 +346,10 @@ class FolderToJsonConverter:
             'description': spec.get('description', ''),
             'schema': schema,
             'workflowNamespace': 'AGENT',
-            'icon': spec.get('icon', {'name': 'GLEAN_APP', 'iconType': 'GLYPH'}),
         }
+
+        if icon := spec.get('icon'):
+            request['icon'] = icon
 
         agent_id = spec.get('id')
         if agent_id:
@@ -331,10 +364,34 @@ class FolderToJsonConverter:
         if not await aiofiles.os.path.exists(skill_md):
             return None
 
+        content: dict[str, Any] = {'mainContent': await read_text(skill_md)}
+        files = await self._collect_skill_files(skill_dir)
+        if files:
+            content['files'] = files
+
         return {
             'name': from_kebab_case(skill_dir.name),
-            'content': {'mainContent': await read_text(skill_md)},
+            'content': content,
         }
+
+    @staticmethod
+    async def _collect_skill_files(skill_dir: Path) -> list[dict]:
+        """Bundle every file under the skill folder (recursively) as a `{path, content}`
+        entry, skipping only the top-level files the platform reconstructs itself."""
+        files: list[dict[str, Any]] = []
+        for root, _dirs, filenames in os.walk(skill_dir):
+            for filename in sorted(filenames):
+                rel_path = (Path(root) / filename).relative_to(skill_dir)
+                is_top_level = rel_path.parent == Path('.')
+                if is_top_level and filename in SKILL_EXCLUDED_TOP_LEVEL_FILES:
+                    continue
+                files.append(
+                    {
+                        'path': rel_path.as_posix(),
+                        'content': await read_file_verbatim(skill_dir / rel_path),
+                    }
+                )
+        return sorted(files, key=lambda f: f['path'])
 
     async def _parse_skills(self, agent_dir: Path, skill_paths: list[str]) -> list[dict]:
         skills = []
@@ -550,9 +607,18 @@ class JsonToFolderConverter:
             skill_dir = skills_base_dir / folder_name
             await aiofiles.os.makedirs(skill_dir, exist_ok=True)
 
-            main_content = skill.get('content', {}).get('mainContent', '')
+            content = skill.get('content', {})
+            main_content = content.get('mainContent', '')
             if main_content:
                 await write_text(skill_dir / SKILL_FILENAME, main_content)
+
+            for skill_file in content.get('files', []):
+                rel_path = (skill_file.get('path') or '').strip()
+                dest = _safe_skill_file_dest(skill_dir, rel_path)
+                if dest is None:
+                    print(f'Warning: skipping skill file with unsafe path {rel_path!r}', file=sys.stderr)
+                    continue
+                await write_skill_file(dest, skill_file.get('content', ''))
 
             paths.append(f'skills/{folder_name}/')
         return paths
