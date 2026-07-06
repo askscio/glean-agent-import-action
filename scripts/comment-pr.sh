@@ -88,28 +88,17 @@ done < <(jq -c '.[]' "$RESULTS_FILE")
 EXISTING_COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
   --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id")
 
-FIRST_COMMENT_ID=$(echo "$EXISTING_COMMENT_IDS" | head -1)
-
-# Clean up duplicate marker comments left by concurrent workflow runs
-if [ -n "$EXISTING_COMMENT_IDS" ]; then
-  echo "$EXISTING_COMMENT_IDS" | tail -n +2 | while IFS= read -r DUP_ID; do
-    [ -z "$DUP_ID" ] && continue
-    echo "Deleting duplicate marker comment $DUP_ID"
-    gh api "repos/${REPO}/issues/comments/${DUP_ID}" -X DELETE || true
-  done
-fi
+LATEST_COMMENT_ID=$(echo "$EXISTING_COMMENT_IDS" | tail -1)
 
 NEW_HASH=$(sha256sum < "$RUNNER_TEMP/agent-sync-comment.md" | cut -d' ' -f1)
 
-if [ -n "$FIRST_COMMENT_ID" ]; then
-  EXISTING_HASH=$(gh api "repos/${REPO}/issues/comments/${FIRST_COMMENT_ID}" --jq '.body' | sha256sum | cut -d' ' -f1)
+if [ -n "$LATEST_COMMENT_ID" ]; then
+  EXISTING_HASH=$(gh api "repos/${REPO}/issues/comments/${LATEST_COMMENT_ID}" --jq '.body' | sha256sum | cut -d' ' -f1)
   if [ "$EXISTING_HASH" = "$NEW_HASH" ]; then
     echo "Comment already up-to-date — skipping."
     exit 0
   fi
-  gh api "repos/${REPO}/issues/comments/${FIRST_COMMENT_ID}" \
-    -X PATCH -F body=@"$RUNNER_TEMP/agent-sync-comment.md"
-else
-  gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-    -X POST -F body=@"$RUNNER_TEMP/agent-sync-comment.md"
 fi
+
+gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+  -X POST -F body=@"$RUNNER_TEMP/agent-sync-comment.md"
