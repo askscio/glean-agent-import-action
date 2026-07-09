@@ -32,13 +32,42 @@ else
   BASE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git empty-tree SHA
 fi
 
+EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
-  BASE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git empty-tree SHA
+  BASE_SHA="$EMPTY_TREE_SHA"  # git empty-tree SHA
+fi
+
+# Diff against the merge-base, not the base-branch tip. When a PR's base branch
+# advances after the branch is cut (long-lived or stacked branches), a plain
+# two-dot `git diff BASE_TIP HEAD` reports files that landed on the base *after*
+# the branch point — so agents the PR never touched get synced and misattributed
+# to the PR author. The merge-base restricts the diff to this PR/push's own
+# commits (equivalent to `git diff BASE...HEAD`). Falls back to the base tip when
+# no merge-base can be found (e.g. empty-tree base, or unrelated histories).
+DIFF_BASE="$BASE_SHA"
+if [ "$BASE_SHA" != "$EMPTY_TREE_SHA" ]; then
+  MERGE_BASE="$(git merge-base "$BASE_SHA" HEAD 2>/dev/null || true)"
+  if [ -z "$MERGE_BASE" ]; then
+    # Shallow checkout/fetch: deepen progressively (bounded) until the branch
+    # point is present in local history, then recompute the merge-base.
+    HEAD_SHA="$(git rev-parse HEAD)"
+    for depth in 100 500 2000; do
+      git fetch -q --deepen="$depth" origin "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true
+      MERGE_BASE="$(git merge-base "$BASE_SHA" HEAD 2>/dev/null || true)"
+      [ -n "$MERGE_BASE" ] && break
+    done
+  fi
+  if [ -n "$MERGE_BASE" ]; then
+    DIFF_BASE="$MERGE_BASE"
+  else
+    echo "WARN: no merge-base for ${BASE_SHA}..HEAD (shallow or unrelated history); diffing against base tip, which may over-report cross-branch changes."
+  fi
 fi
 
 # ── Detect direct agent-root changes ────────────────────────────────────────
 
-CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$BASE_SHA" HEAD -- "$AGENT_DIR/")
+CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$DIFF_BASE" HEAD -- "$AGENT_DIR/")
 
 DIRECT_FOLDERS="[]"
 if [ -n "$CHANGED_FILES" ]; then
@@ -68,7 +97,7 @@ SHARED_AFFECTED="[]"
 SHARED_CHANGED_JSON="[]"
 
 if [ -n "$SHARED_ROOT" ] && [ "$SHARED_ROOT" != "" ]; then
-  SHARED_CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$BASE_SHA" HEAD -- "$SHARED_ROOT/" 2>/dev/null || true)
+  SHARED_CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$DIFF_BASE" HEAD -- "$SHARED_ROOT/" 2>/dev/null || true)
 
   if [ -n "$SHARED_CHANGED_FILES" ]; then
     SHARED_CHANGED_JSON=$(printf '%s\n' "$SHARED_CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
