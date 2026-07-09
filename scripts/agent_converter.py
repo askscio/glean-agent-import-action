@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyyaml", "aiofiles"]
+# dependencies = ["pyyaml", "aiofiles", "croniter"]
 # ///
 """
 Bidirectional converter between agents folder representation and workflow spec JSON
@@ -13,14 +13,17 @@ Usage:
 
 import argparse
 import asyncio
+from datetime import datetime
 import json
 import os
 from pathlib import Path
 import sys
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiofiles
 import aiofiles.os
+from croniter import croniter
 import yaml
 
 DEFAULT_AGENTS_ROOT = Path.cwd()
@@ -36,6 +39,11 @@ GLEAN_SEARCH_ACTION_ID = 'Glean Search'
 CHAT_MESSAGE_TRIGGER = 'CHAT_MESSAGE'
 INPUT_FORM_TRIGGER = 'INPUT_FORM'
 INPUT_FIELD_TYPES = {'TEXT', 'SELECT', 'DATE'}
+INPUT_FORM_SCHEDULE_CONFIG_KEY = 'inputForm'
+
+# The platform persists the schedule start as epoch seconds; spec.yaml stores a
+# human-legible local wall-clock time in the schedule's timezone instead.
+SCHEDULE_START_TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
 def convert_input_field_to_json(field: dict) -> dict:
@@ -93,6 +101,67 @@ def convert_input_field_to_spec(field: dict) -> dict:
             for opt in options
         ]
     return out
+
+
+def convert_schedule_to_json(schedule: dict) -> dict:
+    """Convert a `trigger.schedule` spec.yaml block to the workflow JSON `scheduleConfig`.
+
+    The legible local `startTime` (wall-clock time in `timezone`) is converted to the
+    epoch-seconds integer the platform stores.
+    """
+    frequency = (schedule.get('frequency') or '').strip()
+    if not frequency:
+        raise ValueError('trigger.schedule.frequency is required (a Unix cron expression)')
+    if not croniter.is_valid(frequency):
+        raise ValueError(f'trigger.schedule.frequency {frequency!r} is not a valid Unix cron expression')
+    timezone = (schedule.get('timezone') or '').strip()
+    if not timezone:
+        raise ValueError('trigger.schedule.timezone is required (an IANA timezone, e.g. "Asia/Calcutta")')
+    tz = _resolve_timezone(timezone)
+
+    default_schedule: dict[str, Any] = {'frequency': frequency, 'timezone': timezone}
+    if (start_time := schedule.get('startTime')) is not None:
+        default_schedule['startTime'] = convert_timestamp_to_epoch(str(start_time), tz)
+    return {'enabled': True, 'defaultSchedule': default_schedule}
+
+
+def convert_schedule_to_spec(schedule_config: dict) -> dict | None:
+    """Convert a workflow JSON `scheduleConfig` block to the spec.yaml `trigger.schedule` block.
+
+    Returns None when scheduling is disabled or no default schedule is present, so the caller
+    omits the key entirely.
+    """
+    if not schedule_config.get('enabled'):
+        return None
+    default_schedule = schedule_config.get('defaultSchedule') or {}
+    frequency = (default_schedule.get('frequency') or '').strip()
+    timezone = (default_schedule.get('timezone') or '').strip()
+    if not frequency or not timezone:
+        return None
+
+    out: dict[str, Any] = {'frequency': frequency, 'timezone': timezone}
+    if (start_time := default_schedule.get('startTime')) is not None:
+        out['startTime'] = convert_epoch_to_timestamp(int(start_time), timezone)
+    return out
+
+
+def _resolve_timezone(timezone: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(timezone)
+    except Exception as exc:
+        raise ValueError(f'trigger.schedule.timezone {timezone!r} is not a valid IANA timezone') from exc
+
+
+def convert_timestamp_to_epoch(legible: str, tz: ZoneInfo) -> int:
+    try:
+        naive = datetime.strptime(legible.strip(), SCHEDULE_START_TIME_FORMAT)
+    except ValueError as exc:
+        raise ValueError(f'trigger.schedule.startTime {legible!r} must match {SCHEDULE_START_TIME_FORMAT!r}') from exc
+    return int(naive.replace(tzinfo=tz).timestamp())
+
+
+def convert_epoch_to_timestamp(epoch_seconds: int, timezone: str) -> str:
+    return datetime.fromtimestamp(epoch_seconds, ZoneInfo(timezone)).strftime(SCHEDULE_START_TIME_FORMAT)
 
 
 def _glean_search_config_to_action(glean_search_config: dict | None) -> dict | None:
@@ -337,6 +406,16 @@ class FolderToJsonConverter:
                 f'trigger.inputFields is only valid when trigger.type is {INPUT_FORM_TRIGGER!r}; '
                 f'got trigger.type={trigger_type!r}'
             )
+
+        if schedule := trigger_spec.get('schedule'):
+            if trigger_type != INPUT_FORM_TRIGGER:
+                raise ValueError(
+                    f'trigger.schedule is only valid when trigger.type is {INPUT_FORM_TRIGGER!r}; '
+                    f'got trigger.type={trigger_type!r}'
+                )
+            schema['trigger']['config'] = {
+                INPUT_FORM_SCHEDULE_CONFIG_KEY: {'scheduleConfig': convert_schedule_to_json(schedule)}
+            }
 
         if agent_config:
             _validate_model_selection(agent_config)
@@ -590,6 +669,12 @@ class JsonToFolderConverter:
             fields = schema.get('fields') or []
             if fields:
                 trigger_yaml['inputFields'] = [convert_input_field_to_spec(f) for f in fields]
+        if trigger_type == INPUT_FORM_TRIGGER:
+            schedule_config = ((trigger.get('config') or {}).get(INPUT_FORM_SCHEDULE_CONFIG_KEY) or {}).get(
+                'scheduleConfig'
+            ) or {}
+            if schedule := convert_schedule_to_spec(schedule_config):
+                trigger_yaml['schedule'] = schedule
         spec['trigger'] = trigger_yaml
 
         icon = request.get('icon')
