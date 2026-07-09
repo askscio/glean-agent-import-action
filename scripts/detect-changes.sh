@@ -38,13 +38,24 @@ if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
   BASE_SHA="$EMPTY_TREE_SHA"  # git empty-tree SHA
 fi
 
-# Diff against the merge-base, not the base-branch tip. When a PR's base branch
-# advances after the branch is cut (long-lived or stacked branches), a plain
-# two-dot `git diff BASE_TIP HEAD` reports files that landed on the base *after*
-# the branch point — so agents the PR never touched get synced and misattributed
-# to the PR author. The merge-base restricts the diff to this PR/push's own
-# commits (equivalent to `git diff BASE...HEAD`). Falls back to the base tip when
-# no merge-base can be found (e.g. empty-tree base, or unrelated histories).
+# What counts as "changed by this PR/push" needs two conditions, because a single
+# git diff misfires on the two ways a branch accumulates commits it didn't author:
+#
+#   1. Base branch advanced after the branch was cut (long-lived / stacked PRs):
+#      a two-dot `git diff BASE_TIP HEAD` reports files that landed on the base
+#      *after* the branch point. Fix: diff against merge-base(BASE, HEAD) so only
+#      the branch's own commits count (equivalent to `git diff BASE...HEAD`).
+#
+#   2. A messy rebase pulls master commits onto the branch with rewritten SHAs.
+#      Those are unreachable from the real base tip, so merge-base *cannot*
+#      exclude them — they look like the branch's own commits. But their content
+#      matches what's already on the base, so they do not diverge from BASE_TIP.
+#      Fix: also require the file to differ from the base-branch tip.
+#
+# So a file is "changed" iff it appears in BOTH merge-base..HEAD (the branch's own
+# commits) AND BASE_TIP..HEAD (real divergence from the base). Intersecting the
+# two neutralizes both base-advance and rebase-duplicate noise, which otherwise
+# create draft versions on many agents the PR never touched.
 DIFF_BASE="$BASE_SHA"
 if [ "$BASE_SHA" != "$EMPTY_TREE_SHA" ]; then
   MERGE_BASE="$(git merge-base "$BASE_SHA" HEAD 2>/dev/null || true)"
@@ -65,9 +76,31 @@ if [ "$BASE_SHA" != "$EMPTY_TREE_SHA" ]; then
   fi
 fi
 
+# Changed files under a path, comparing a given base against HEAD.
+changed_files_under() {
+  git diff --name-only --diff-filter=ACMRD "$1" HEAD -- "$2/" 2>/dev/null || true
+}
+
+# Files this PR/push actually changed under a path: the intersection of the
+# branch's own commits (DIFF_BASE = merge-base) and real divergence from the base
+# tip (BASE_SHA) — see the two-condition rationale above. When DIFF_BASE ==
+# BASE_SHA (empty-tree base, or a push whose `before` is HEAD's ancestor) the
+# intersection is a no-op, so push/dispatch behavior is unchanged.
+changed_files_for_scope() {
+  local path="$1" own tip
+  own="$(changed_files_under "$DIFF_BASE" "$path")"
+  if [ "$DIFF_BASE" = "$BASE_SHA" ]; then
+    printf '%s' "$own"
+    return
+  fi
+  tip="$(changed_files_under "$BASE_SHA" "$path")"
+  comm -12 <(printf '%s\n' "$own" | sed '/^$/d' | sort -u) \
+           <(printf '%s\n' "$tip" | sed '/^$/d' | sort -u)
+}
+
 # ── Detect direct agent-root changes ────────────────────────────────────────
 
-CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$DIFF_BASE" HEAD -- "$AGENT_DIR/")
+CHANGED_FILES=$(changed_files_for_scope "$AGENT_DIR")
 
 DIRECT_FOLDERS="[]"
 if [ -n "$CHANGED_FILES" ]; then
@@ -97,7 +130,7 @@ SHARED_AFFECTED="[]"
 SHARED_CHANGED_JSON="[]"
 
 if [ -n "$SHARED_ROOT" ] && [ "$SHARED_ROOT" != "" ]; then
-  SHARED_CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRD "$DIFF_BASE" HEAD -- "$SHARED_ROOT/" 2>/dev/null || true)
+  SHARED_CHANGED_FILES=$(changed_files_for_scope "$SHARED_ROOT")
 
   if [ -n "$SHARED_CHANGED_FILES" ]; then
     SHARED_CHANGED_JSON=$(printf '%s\n' "$SHARED_CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
