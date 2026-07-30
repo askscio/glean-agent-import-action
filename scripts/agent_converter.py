@@ -38,7 +38,7 @@ GLEAN_SEARCH_ACTION_ID = 'Glean Search'
 
 CHAT_MESSAGE_TRIGGER = 'CHAT_MESSAGE'
 INPUT_FORM_TRIGGER = 'INPUT_FORM'
-INPUT_FIELD_TYPES = {'TEXT', 'SELECT', 'DATE'}
+INPUT_FIELD_TYPES = {'TEXT', 'SELECT', 'DATE', 'DOCUMENT'}
 INPUT_FORM_SCHEDULE_CONFIG_KEY = 'inputForm'
 
 # The platform persists the schedule start as epoch seconds; spec.yaml stores a
