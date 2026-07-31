@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
+      - name: agent converter tests
+        run: python3 tests/test-agent-converter.py
       - name: detect-changes tests
         run: bash tests/test-detect-changes.sh
       - name: resolve-shared-deps tests
