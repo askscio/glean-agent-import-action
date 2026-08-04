@@ -61,7 +61,7 @@ jobs:
 
 | Output | Description |
 |--------|-------------|
-| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, status}]` |
+| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, previewId, status}]`. `previewId` is the transient preview workflow's id, set only for `draft_preview`. |
 
 ## Workflow dispatch inputs
 

@@ -25,31 +25,26 @@ build_sync_request_workflow() {
   local agent_id="$1"
   local spec_json="$2"
   local commit_sha="$3"
-  local is_draft="$4"
-  local publish="$5"   # boolean: true = publish immediately, false = stage only
-  local message="$6"
-  local git_author_id="$7"
+  local publish="$4"   # boolean: true = publish immediately, false = stage only
+  local message="$5"
+  local git_author_id="$6"
 
   echo "$spec_json" | jq -c \
     --arg id "$agent_id" \
     --arg sha "$commit_sha" \
-    --argjson draft "$is_draft" \
     --argjson publish "$publish" \
     --arg msg "$message" \
     --arg author "$git_author_id" \
     '{
       id: $id,
       gitCommitSha: $sha,
-      isDraft: $draft,
-      validateDraft: $draft,
       workflowSource: "GIT",
       name: .rootWorkflow.name,
       description: .rootWorkflow.description,
       icon: .rootWorkflow.icon,
       schema: .rootWorkflow.schema
     } + if ($author | length) > 0 then {gitAuthorId: $author} else {} end
-      + if $draft then {}
-        elif $publish then {stagingOptions: {publish: true, commitMessage: $msg}}
+      + if $publish then {stagingOptions: {publish: true, commitMessage: $msg}}
         else {stagingOptions: {save: true, commitMessage: $msg}}
         end'
 }
@@ -58,27 +53,22 @@ build_sync_request_automode() {
   local agent_id="$1"
   local converter_json="$2"
   local commit_sha="$3"
-  local is_draft="$4"
-  local publish="$5"   # boolean: true = publish immediately, false = stage only
-  local message="$6"
-  local git_author_id="$7"
+  local publish="$4"   # boolean: true = publish immediately, false = stage only
+  local message="$5"
+  local git_author_id="$6"
 
   echo "$converter_json" | jq -c \
     --arg id "$agent_id" \
     --arg sha "$commit_sha" \
-    --argjson draft "$is_draft" \
     --argjson publish "$publish" \
     --arg msg "$message" \
     --arg author "$git_author_id" \
     '. + {
       id: $id,
       gitCommitSha: $sha,
-      isDraft: $draft,
-      validateDraft: $draft,
       workflowSource: "GIT"
     } + if ($author | length) > 0 then {gitAuthorId: $author} else {} end
-      + if $draft then {}
-        elif $publish then {stagingOptions: {publish: true, commitMessage: $msg}}
+      + if $publish then {stagingOptions: {publish: true, commitMessage: $msg}}
         else {stagingOptions: {save: true, commitMessage: $msg}}
         end'
 }
@@ -224,17 +214,13 @@ while IFS= read -r FOLDER; do
     continue
   fi
 
-  IS_DRAFT=true
   PUBLISH=false
   MODE="draft_preview"
   if [ "${FORCE_DRAFT:-false}" = "true" ]; then
-    IS_DRAFT=true
     MODE="draft_preview"
   elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${PR_RETRY:-}" ]; then
-    IS_DRAFT=true
     MODE="draft_preview"
   elif [ "$EVENT_NAME" != "pull_request" ]; then
-    IS_DRAFT=false
     if [ "$EFFECTIVE_SYNC_MODE" = "published" ]; then
       PUBLISH=true
       MODE="published"
@@ -286,7 +272,7 @@ while IFS= read -r FOLDER; do
     if [ "$IS_PREVIEW" = "true" ]; then
       REQUEST_BODY=$(build_preview_request_workflow "$AGENT_ID" "$SPEC_JSON")
     else
-      REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+      REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
     fi
 
   elif [ "$AGENT_MODE" = "automode" ]; then
@@ -342,7 +328,7 @@ while IFS= read -r FOLDER; do
     if [ "$IS_PREVIEW" = "true" ]; then
       REQUEST_BODY=$(build_preview_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT")
     else
-      REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+      REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
     fi
   fi
 
@@ -384,11 +370,21 @@ while IFS= read -r FOLDER; do
     PREVIEW_ID=""
     if [ "$IS_PREVIEW" = "true" ]; then
       PREVIEW_ID=$(jq -r '.workflow.id // ""' "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "")
+      # No transient id means the isolated preview was not created — usually
+      # agents.transientWorkflows being disabled server-side. There is nothing safe to
+      # link, so fail rather than point the reviewer at the real agent.
       if [ -z "$PREVIEW_ID" ]; then
-        echo "::warning::Transient preview for ${AGENT_ID} returned no workflow id — the PR comment will fall back to the real agent."
-      else
-        echo "  Transient preview workflow: $PREVIEW_ID"
+        echo "::error::Preview for ${AGENT_ID} returned no transient workflow id — check that agents.transientWorkflows is enabled on ${INSTANCE_URL_BE}."
+        append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
+          --arg aid "$AGENT_ID" \
+          --arg name "$AGENT_DISPLAY_NAME" \
+          --arg agentMode "$AGENT_MODE" \
+          --arg mode "$MODE" \
+          --arg err "preview returned no transient workflow id"
+        HAS_FAILURE=true
+        continue
       fi
+      echo "  Transient preview workflow: $PREVIEW_ID"
     fi
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "previewId": $pid, "status": "success"}]' \
       --arg aid "$AGENT_ID" \

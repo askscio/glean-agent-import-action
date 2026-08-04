@@ -162,6 +162,8 @@ test_pr_preview_creates_transient_workflow() {
     "null" "$(echo "$body" | jq -c '.id')"
   assert_eq "preview neither stages nor publishes" \
     "null" "$(echo "$body" | jq -c '.stagingOptions')"
+  assert_eq "preview sends no isDraft" "null" "$(echo "$body" | jq -c '.isDraft')"
+  assert_eq "preview sends no validateDraft" "null" "$(echo "$body" | jq -c '.validateDraft')"
 
   assert_eq "previewId comes from the response workflow id" \
     "transient-999" "$(result_field "$r" '.[0].previewId')"
@@ -213,6 +215,8 @@ test_staged_merge_updates_real_agent() {
   assert_eq "no parentWorkflowId on merge" "null" "$(echo "$body" | jq -c '.parentWorkflowId')"
   assert_eq "targets the real agent id" '"agent-123"' "$(echo "$body" | jq -c '.id')"
   assert_eq "stages a save" "true" "$(echo "$body" | jq -c '.stagingOptions.save')"
+  assert_eq "no isDraft on merge" "null" "$(echo "$body" | jq -c '.isDraft')"
+  assert_eq "no validateDraft on merge" "null" "$(echo "$body" | jq -c '.validateDraft')"
   assert_eq "mode recorded as staged" "staged" "$(result_field "$r" '.[0].mode')"
   rm -rf "$r"
 }
@@ -270,16 +274,18 @@ test_force_draft_uses_preview_path() {
   rm -rf "$r"
 }
 
-test_preview_without_id_stays_empty() {
-  echo "Test: preview response with no workflow id leaves previewId empty"
+test_preview_without_id_is_a_failure() {
+  echo "Test: preview response with no workflow id fails instead of falling back"
   local r
   reset_env
   MOCK_RESPONSE='{"workflow":{}}'
   r=$(new_sandbox workflow)
   run_sync "$r"
 
-  assert_eq "previewId is empty" "" "$(result_field "$r" '.[0].previewId')"
-  assert_eq "still a success" "success" "$(result_field "$r" '.[0].status')"
+  assert_eq "recorded as an error" "error" "$(result_field "$r" '.[0].status')"
+  assert_eq "error names the missing transient id" \
+    "preview returned no transient workflow id" "$(result_field "$r" '.[0].error')"
+  assert_eq "no previewId is recorded" "null" "$(result_field "$r" '.[0].previewId')"
   rm -rf "$r"
 }
 
@@ -312,7 +318,7 @@ test_retry_dispatch_uses_preview_path
 echo ""
 test_force_draft_uses_preview_path
 echo ""
-test_preview_without_id_stays_empty
+test_preview_without_id_is_a_failure
 echo ""
 test_preview_failure_records_error
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# A PR preview must link its transient workflow, never the real agent's durable draft editor.
+# A PR preview must link its transient workflow, and must never link the real agent at all.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMENT_SCRIPT="${SCRIPT_DIR}/../scripts/comment-pr.sh"
@@ -84,26 +84,17 @@ test_preview_links_to_transient_workflow() {
   assert_contains "keeps the backend qe param" "qe=" "$out"
 }
 
-test_missing_preview_id_falls_back_to_agent() {
-  echo "Test: missing previewId falls back to the real agent, never to /edit"
+test_no_fallback_to_the_real_agent() {
+  echo "Test: a preview never falls back to a link on the real agent"
   local out
-  out=$(render_comment '[{"agentId":"agent-123","agentName":"Test Bench","folder":"test-bench","mode":"draft_preview","previewId":"","status":"success"}]')
+  out=$(render_comment '[{"agentId":"agent-123","agentName":"Test Bench","folder":"test-bench","mode":"draft_preview","status":"error","error":"preview returned no transient workflow id"}]')
 
-  assert_contains "falls back to the real agent preview url" \
-    "${FE_URL}/chat/agents/agent-123/preview" "$out"
-  assert_not_contains "still never links the durable draft editor" \
+  assert_not_contains "no link to the real agent's draft editor" \
     "/chat/agents/agent-123/edit" "$out"
-}
-
-test_legacy_results_without_preview_id() {
-  echo "Test: results predating previewId still render a link"
-  local out
-  out=$(render_comment '[{"agentId":"agent-123","agentName":"Test Bench","folder":"test-bench","mode":"draft_preview","status":"success"}]')
-
-  assert_contains "falls back when the field is absent entirely" \
-    "${FE_URL}/chat/agents/agent-123/preview" "$out"
-  assert_not_contains "no edit link for legacy results" \
-    "/chat/agents/agent-123/edit" "$out"
+  assert_not_contains "no link to the real agent at all" \
+    "/chat/agents/agent-123" "$out"
+  assert_contains "surfaces why the preview is missing" \
+    "preview returned no transient workflow id" "$out"
 }
 
 test_failed_preview_shows_error_not_link() {
@@ -111,7 +102,7 @@ test_failed_preview_shows_error_not_link() {
   local out
   out=$(render_comment '[{"agentId":"agent-123","agentName":"Test Bench","folder":"test-bench","mode":"draft_preview","status":"error","error":"HTTP 403"}]')
 
-  assert_contains "shows the failure marker" ":x: Draft Preview" "$out"
+  assert_contains "shows the failure marker" ":x: Preview" "$out"
   assert_contains "shows the error text" "HTTP 403" "$out"
   assert_not_contains "no preview link on failure" "/preview?qe=" "$out"
   assert_not_contains "no edit link on failure" "/edit?qe=" "$out"
@@ -134,9 +125,7 @@ test_mixed_results_only_link_successes() {
 
 test_preview_links_to_transient_workflow
 echo ""
-test_missing_preview_id_falls_back_to_agent
-echo ""
-test_legacy_results_without_preview_id
+test_no_fallback_to_the_real_agent
 echo ""
 test_failed_preview_shows_error_not_link
 echo ""
