@@ -83,6 +83,39 @@ build_sync_request_automode() {
         end'
 }
 
+# A preview is parented to the real agent but stored separately, so it never touches
+# the agent's draft, staged, or published state.
+build_preview_request_workflow() {
+  local agent_id="$1"
+  local spec_json="$2"
+
+  echo "$spec_json" | jq -c \
+    --arg parent "$agent_id" \
+    '{
+      transient: true,
+      parentWorkflowId: $parent,
+      workflowNamespace: "AGENT",
+      name: .rootWorkflow.name,
+      description: .rootWorkflow.description,
+      icon: .rootWorkflow.icon,
+      schema: .rootWorkflow.schema
+    }'
+}
+
+build_preview_request_automode() {
+  local agent_id="$1"
+  local converter_json="$2"
+
+  # The real agent id must not ride along as the new workflow's own id.
+  echo "$converter_json" | jq -c \
+    --arg parent "$agent_id" \
+    'del(.id) + {
+      transient: true,
+      parentWorkflowId: $parent,
+      workflowNamespace: "AGENT"
+    }'
+}
+
 # Infers agent type from folder structure.
 # Prints "automode"  if spec.yaml is present (autonomous agent),
 #        "workflow"  if a .json spec file is present (workflow agent),
@@ -212,6 +245,14 @@ while IFS= read -r FOLDER; do
     fi
   fi
 
+  # Previews create a brand new transient workflow; staged/published mutate the real agent.
+  IS_PREVIEW=false
+  REQUEST_URL="${INSTANCE_URL_BE}/rest/api/v1/agents/${AGENT_ID}"
+  if [ "$MODE" = "draft_preview" ]; then
+    IS_PREVIEW=true
+    REQUEST_URL="${INSTANCE_URL_BE}/rest/api/v1/agents"
+  fi
+
   if [ "$AGENT_MODE" = "workflow" ]; then
     JSON_SPEC_FILES=()
     for JSON_FILE in "${FOLDER_PATH}"/*.json; do
@@ -244,7 +285,11 @@ while IFS= read -r FOLDER; do
     WORKFLOW_NAME=$(echo "$SPEC_JSON" | jq -r '.rootWorkflow.name // ""')
     [ -n "$WORKFLOW_NAME" ] && AGENT_DISPLAY_NAME="$WORKFLOW_NAME"
 
-    REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+    if [ "$IS_PREVIEW" = "true" ]; then
+      REQUEST_BODY=$(build_preview_request_workflow "$AGENT_ID" "$SPEC_JSON")
+    else
+      REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+    fi
 
   elif [ "$AGENT_MODE" = "automode" ]; then
     CONVERTER_STDERR_FILE="$RUNNER_TEMP/converter-stderr-${FOLDER}.txt"
@@ -296,7 +341,11 @@ while IFS= read -r FOLDER; do
     AUTOMODE_NAME=$(echo "$CONVERTER_OUTPUT" | jq -r '.name // ""')
     [ -n "$AUTOMODE_NAME" ] && AGENT_DISPLAY_NAME="$AUTOMODE_NAME"
 
-    REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+    if [ "$IS_PREVIEW" = "true" ]; then
+      REQUEST_BODY=$(build_preview_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT")
+    else
+      REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$IS_DRAFT" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
+    fi
   fi
 
   echo "Agent: $AGENT_ID (folder: $FOLDER)"
@@ -313,7 +362,7 @@ while IFS= read -r FOLDER; do
   CURL_EXIT=0
   HTTP_CODE=$(curl -sS --connect-timeout 10 --max-time 60 \
     -o "$RUNNER_TEMP/sync-response-${FOLDER}.json" -w '%{http_code}' \
-    -X POST "${INSTANCE_URL_BE}/rest/api/v1/agents/${AGENT_ID}" \
+    -X POST "${REQUEST_URL}" \
     -H "Authorization: Bearer ${API_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "@${CURL_BODY_FILE}" 2>"$CURL_ERR_FILE") || CURL_EXIT=$?
@@ -334,12 +383,22 @@ while IFS= read -r FOLDER; do
 
   if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
     echo "  Synced successfully (HTTP $HTTP_CODE)"
-    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "status": "success"}]' \
+    PREVIEW_ID=""
+    if [ "$IS_PREVIEW" = "true" ]; then
+      PREVIEW_ID=$(jq -r '.workflow.id // ""' "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "")
+      if [ -z "$PREVIEW_ID" ]; then
+        echo "::warning::Transient preview for ${AGENT_ID} returned no workflow id — the PR comment will fall back to the real agent."
+      else
+        echo "  Transient preview workflow: $PREVIEW_ID"
+      fi
+    fi
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "previewId": $pid, "status": "success"}]' \
       --arg aid "$AGENT_ID" \
       --arg name "$AGENT_DISPLAY_NAME" \
       --arg agentMode "$AGENT_MODE" \
       --arg mode "$MODE" \
-      --arg msg "$MESSAGE" 
+      --arg msg "$MESSAGE" \
+      --arg pid "$PREVIEW_ID"
   else
     RESP_BODY=$(cat "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "no response body")
     echo "::error::Failed to sync agent $AGENT_ID (HTTP $HTTP_CODE): $RESP_BODY"

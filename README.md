@@ -117,7 +117,7 @@ message: "My release note" # Optional: version message shown in Glean (defaults 
 
 | Mode | Trigger | Behaviour |
 |------|---------|-----------|
-| `draft_preview` | Pull request (always) | Creates a non-visible draft in Glean. Preview link posted to the PR. |
+| `draft_preview` | Pull request (always) | Creates an isolated, throwaway preview agent in Glean. The real agent's draft, staged, and published content are left untouched. Preview link posted to the PR. |
 | `staged` | Push/merge (default) | Saves a new staged version pending moderator approval in Glean. |
 | `published` | Push/merge (opt-in) | Immediately publishes the agent to all users. |
 
@@ -127,7 +127,7 @@ To publish on merge, set `default-sync-mode: published` on the action input, or 
 
 1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
 2. **Convert** — for autonomous agents (`spec.yaml`), converts the folder into the Glean workflow spec JSON format using `agent_converter.py`.
-3. **Sync** — calls the Glean API (`POST /rest/api/v1/agents/{id}`) for each changed agent.
+3. **Sync** — for PR previews, calls `POST /rest/api/v1/agents` to create a throwaway preview agent parented to the real one. For staged/published syncs on merge, calls `POST /rest/api/v1/agents/{id}` to update the real agent.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
 ## Shared resources (`shared-root`)

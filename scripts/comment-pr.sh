@@ -35,7 +35,11 @@ while IFS= read -r ROW; do
 
   if [ "$STATUS" = "success" ]; then
     STATUS_TEXT=":white_check_mark: Draft Preview"
-    PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${AID}/edit?qe=${BE_ENCODED})"
+    # Fall back to the real agent only when no transient id came back — and to /preview,
+    # never /edit, which would open the agent's durable draft.
+    PID=$(echo "$ROW" | jq -r '.previewId // ""')
+    [ -z "$PID" ] && PID="$AID"
+    PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${PID}/preview?qe=${BE_ENCODED})"
     RETRY="—"
   else
     HAS_FAILURES=true
