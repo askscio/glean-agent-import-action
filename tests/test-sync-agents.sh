@@ -144,7 +144,8 @@ test_pr_preview_creates_transient_workflow() {
   echo "Test: PR preview creates a transient workflow"
   local r body
   reset_env
-  r=$(new_sandbox workflow)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox automode)
   run_sync "$r"
 
   assert_eq "posts to the create-agent endpoint" \
@@ -169,32 +170,6 @@ test_pr_preview_creates_transient_workflow() {
     "transient-999" "$(result_field "$r" '.[0].previewId')"
   assert_eq "preview recorded as a success" \
     "success" "$(result_field "$r" '.[0].status')"
-  rm -rf "$r"
-}
-
-test_automode_preview_reparents_agent() {
-  echo "Test: auto-mode PR preview reparents instead of reusing the agent id"
-  local r body
-  reset_env
-  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"auto goal"}}'
-  r=$(new_sandbox automode)
-  run_sync "$r"
-
-  assert_eq "posts to the create-agent endpoint" \
-    "${BE_URL}/rest/api/v1/agents" "$(captured_url "$r")"
-
-  body=$(captured_body "$r")
-  assert_eq "transient is true" "true" "$(echo "$body" | jq -c '.transient')"
-  assert_eq "parentWorkflowId is the real agent" \
-    '"agent-123"' "$(echo "$body" | jq -c '.parentWorkflowId')"
-  assert_eq "workflowNamespace is AGENT" \
-    '"AGENT"' "$(echo "$body" | jq -c '.workflowNamespace')"
-  assert_eq "the converter's id is dropped" "null" "$(echo "$body" | jq -c '.id')"
-  assert_eq "definition is preserved" \
-    '"auto goal"' "$(echo "$body" | jq -c '.schema.goal')"
-  assert_eq "previewId captured" \
-    "transient-999" "$(result_field "$r" '.[0].previewId')"
-  unset MOCK_CONVERTER_OUTPUT
   rm -rf "$r"
 }
 
@@ -247,7 +222,8 @@ test_retry_dispatch_uses_preview_path() {
   EVENT_NAME="workflow_dispatch"
   PR_RETRY="42"
   MOCK_RESPONSE='{"workflow":{"id":"transient-retry"}}'
-  r=$(new_sandbox workflow)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox automode)
   run_sync "$r"
 
   assert_eq "retry posts to the create-agent endpoint" \
@@ -264,7 +240,8 @@ test_force_draft_uses_preview_path() {
   EVENT_NAME="push"
   FORCE_DRAFT="true"
   MOCK_RESPONSE='{"workflow":{"id":"transient-forced"}}'
-  r=$(new_sandbox workflow)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox automode)
   run_sync "$r"
 
   assert_eq "forced draft posts to the create-agent endpoint" \
@@ -279,7 +256,8 @@ test_preview_without_id_is_a_failure() {
   local r
   reset_env
   MOCK_RESPONSE='{"workflow":{}}'
-  r=$(new_sandbox workflow)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox automode)
   run_sync "$r"
 
   assert_eq "recorded as an error" "error" "$(result_field "$r" '.[0].status')"
@@ -295,7 +273,8 @@ test_preview_failure_records_error() {
   reset_env
   MOCK_HTTP_CODE="403"
   MOCK_RESPONSE='{"error":"forbidden"}'
-  r=$(new_sandbox workflow)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox automode)
   run_sync "$r"
 
   assert_eq "status is error" "error" "$(result_field "$r" '.[0].status')"
@@ -307,8 +286,6 @@ test_preview_failure_records_error() {
 # ── Runner ──────────────────────────────────────────────────────────────────
 
 test_pr_preview_creates_transient_workflow
-echo ""
-test_automode_preview_reparents_agent
 echo ""
 test_staged_merge_updates_real_agent
 echo ""

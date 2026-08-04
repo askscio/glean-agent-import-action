@@ -74,23 +74,6 @@ build_sync_request_automode() {
 }
 
 # Stored separately from the parent, so a preview never touches its draft/staged/published state.
-build_preview_request_workflow() {
-  local agent_id="$1"
-  local spec_json="$2"
-
-  echo "$spec_json" | jq -c \
-    --arg parent "$agent_id" \
-    '{
-      transient: true,
-      parentWorkflowId: $parent,
-      workflowNamespace: "AGENT",
-      name: .rootWorkflow.name,
-      description: .rootWorkflow.description,
-      icon: .rootWorkflow.icon,
-      schema: .rootWorkflow.schema
-    }'
-}
-
 build_preview_request_automode() {
   local agent_id="$1"
   local converter_json="$2"
@@ -269,11 +252,7 @@ while IFS= read -r FOLDER; do
     WORKFLOW_NAME=$(echo "$SPEC_JSON" | jq -r '.rootWorkflow.name // ""')
     [ -n "$WORKFLOW_NAME" ] && AGENT_DISPLAY_NAME="$WORKFLOW_NAME"
 
-    if [ "$IS_PREVIEW" = "true" ]; then
-      REQUEST_BODY=$(build_preview_request_workflow "$AGENT_ID" "$SPEC_JSON")
-    else
-      REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
-    fi
+    REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
 
   elif [ "$AGENT_MODE" = "automode" ]; then
     CONVERTER_STDERR_FILE="$RUNNER_TEMP/converter-stderr-${FOLDER}.txt"
