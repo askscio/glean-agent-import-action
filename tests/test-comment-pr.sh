@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mocked tests for comment-pr.sh.
-# `gh` is stubbed on PATH so no GitHub API call is made; assertions run against the
-# rendered comment body the script writes to $RUNNER_TEMP. The point of these is that
-# a PR preview must link to its isolated transient workflow and must never hand the
-# reviewer a link into the real agent's durable draft editor.
+# A PR preview must link its transient workflow, never the real agent's durable draft editor.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMENT_SCRIPT="${SCRIPT_DIR}/../scripts/comment-pr.sh"
@@ -44,7 +40,6 @@ assert_not_contains() {
   fi
 }
 
-# render_comment <results-json> — echoes the rendered PR comment markdown.
 render_comment() {
   local results="$1" root
   root=$(mktemp -d)

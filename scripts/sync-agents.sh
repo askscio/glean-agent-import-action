@@ -83,8 +83,7 @@ build_sync_request_automode() {
         end'
 }
 
-# A preview is parented to the real agent but stored separately, so it never touches
-# the agent's draft, staged, or published state.
+# Stored separately from the parent, so a preview never touches its draft/staged/published state.
 build_preview_request_workflow() {
   local agent_id="$1"
   local spec_json="$2"
@@ -245,7 +244,6 @@ while IFS= read -r FOLDER; do
     fi
   fi
 
-  # Previews create a brand new transient workflow; staged/published mutate the real agent.
   IS_PREVIEW=false
   REQUEST_URL="${INSTANCE_URL_BE}/rest/api/v1/agents/${AGENT_ID}"
   if [ "$MODE" = "draft_preview" ]; then

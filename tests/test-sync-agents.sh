@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mocked tests for sync-agents.sh.
-# `curl`, `yq` and `uv` are stubbed on PATH so nothing leaves the machine: the curl
-# stub records the request URL and body and replays a canned response. These assert
-# the split between PR previews (which create an isolated transient workflow) and
-# merge syncs (which mutate the real agent) — crossing those wires would write PR
-# content into an agent's durable draft/staged/published state.
+# Crossing the preview/merge wires would write PR content into an agent's durable state.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC_SCRIPT="${SCRIPT_DIR}/../scripts/sync-agents.sh"
@@ -42,8 +37,6 @@ reset_env() {
   MOCK_HTTP_CODE="200"
 }
 
-# new_sandbox <workflow|automode> [sync_mode] — echoes the sandbox root.
-# Callers read $root/capture/{url,body.json} and $root/tmp/agent-sync-results.json.
 new_sandbox() {
   local agent_mode="$1" sync_mode="${2:-staged}" root
   root=$(mktemp -d)
@@ -107,7 +100,6 @@ fi
 sed -nE "s/^${key}:[[:space:]]*(.*)$/\1/p" "$file" | head -1 | sed -E 's/^"//; s/"$//'
 YQ
 
-  # Stands in for the auto-mode converter (`uv run ... to-json`).
   cat > "$root/bin/uv" <<'UV'
 #!/usr/bin/env bash
 printf '%s' "$MOCK_CONVERTER_OUTPUT"
