@@ -370,9 +370,7 @@ while IFS= read -r FOLDER; do
     PREVIEW_ID=""
     if [ "$IS_PREVIEW" = "true" ]; then
       PREVIEW_ID=$(jq -r '.workflow.id // ""' "$RUNNER_TEMP/sync-response-${FOLDER}.json" 2>/dev/null || echo "")
-      # No transient id means the isolated preview was not created — usually
-      # agents.transientWorkflows being disabled server-side. There is nothing safe to
-      # link, so fail rather than point the reviewer at the real agent.
+      # Empty id means agents.transientWorkflows is off server-side; there is nothing safe to link.
       if [ -z "$PREVIEW_ID" ]; then
         echo "::error::Preview for ${AGENT_ID} returned no transient workflow id — check that agents.transientWorkflows is enabled on ${INSTANCE_URL_BE}."
         append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \

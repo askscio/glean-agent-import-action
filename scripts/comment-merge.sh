@@ -34,7 +34,6 @@ while IFS= read -r ROW; do
       STATUS_TEXT=":rocket: Published"
     elif [ "$SYNC_MODE" = "draft_preview" ]; then
       STATUS_TEXT=":pencil: Preview"
-      # A preview lives in its own transient workflow; the real agent was not touched.
       LINK="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/$(echo "$ROW" | jq -r '.previewId')/preview)"
     else
       STATUS_TEXT=":white_check_mark: Staged"
