@@ -74,7 +74,7 @@ When triggered via `workflow_dispatch`, the action reads these inputs from `gith
 
 ## Agent folder structure
 
-Each agent lives in its own subfolder under `agent-directory`. The action supports two agent types, detected automatically from the folder contents.
+Each agent lives in its own subfolder under `agent-directory`, containing a `spec.yaml`.
 
 ### Autonomous agents (`spec.yaml`)
 
@@ -94,15 +94,6 @@ name: My Agent
 description: Does something useful
 tools:
   - toolProviderId: glean-search
-```
-
-### Workflow agents (`.json` spec)
-
-```
-.glean/agents/
-└── my-workflow/
-    ├── my-workflow.json   # Workflow spec JSON (exactly one .json file per folder)
-    └── glean-sync.yaml    # Required — must contain agent-id
 ```
 
 ### `glean-sync.yaml` reference
@@ -126,7 +117,7 @@ To publish on merge, set `default-sync-mode: published` on the action input, or 
 ## How it works
 
 1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
-2. **Convert** — for autonomous agents (`spec.yaml`), converts the folder into the Glean workflow spec JSON format using `agent_converter.py`.
+2. **Convert** — converts each agent folder's `spec.yaml` into the Glean workflow spec JSON format using `agent_converter.py`.
 3. **Sync** — for PR previews, calls `POST /rest/api/v1/agents` to create a throwaway preview agent parented to the real one. For staged/published syncs on merge, calls `POST /rest/api/v1/agents/{id}` to update the real agent.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 

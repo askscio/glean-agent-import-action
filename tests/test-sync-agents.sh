@@ -38,24 +38,11 @@ reset_env() {
 }
 
 new_sandbox() {
-  local agent_mode="$1" sync_mode="${2:-staged}" root
+  local sync_mode="${1:-staged}" root
   root=$(mktemp -d)
   mkdir -p "$root/bin" "$root/capture" "$root/tmp" "$root/agents/test-bench"
 
-  if [ "$agent_mode" = "workflow" ]; then
-    cat > "$root/agents/test-bench/agent.json" <<'JSON'
-{
-  "rootWorkflow": {
-    "name": "Test Bench Agent",
-    "description": "an agent used by tests",
-    "icon": {"color": "#123456"},
-    "schema": {"goal": "do the thing"}
-  }
-}
-JSON
-  else
-    printf 'id: agent-123\nname: Auto Bench Agent\n' > "$root/agents/test-bench/spec.yaml"
-  fi
+  printf 'id: agent-123\nname: Auto Bench Agent\n' > "$root/agents/test-bench/spec.yaml"
 
   printf 'agent-id: agent-123\nmessage: sync from git\nsync-mode: %s\n' "$sync_mode" \
     > "$root/agents/test-bench/glean-sync.yaml"
@@ -145,7 +132,7 @@ test_pr_preview_creates_transient_workflow() {
   local r body
   reset_env
   MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
-  r=$(new_sandbox automode)
+  r=$(new_sandbox)
   run_sync "$r"
 
   assert_eq "posts to the create-agent endpoint" \
@@ -179,7 +166,8 @@ test_staged_merge_updates_real_agent() {
   reset_env
   EVENT_NAME="push"
   DEFAULT_SYNC_MODE="staged"
-  r=$(new_sandbox workflow staged)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox staged)
   run_sync "$r"
 
   assert_eq "posts to the per-agent endpoint" \
@@ -202,7 +190,8 @@ test_published_merge_updates_real_agent() {
   reset_env
   EVENT_NAME="push"
   DEFAULT_SYNC_MODE="published"
-  r=$(new_sandbox workflow published)
+  MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
+  r=$(new_sandbox published)
   run_sync "$r"
 
   assert_eq "posts to the per-agent endpoint" \
@@ -223,7 +212,7 @@ test_retry_dispatch_uses_preview_path() {
   PR_RETRY="42"
   MOCK_RESPONSE='{"workflow":{"id":"transient-retry"}}'
   MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
-  r=$(new_sandbox automode)
+  r=$(new_sandbox)
   run_sync "$r"
 
   assert_eq "retry posts to the create-agent endpoint" \
@@ -241,7 +230,7 @@ test_force_draft_uses_preview_path() {
   FORCE_DRAFT="true"
   MOCK_RESPONSE='{"workflow":{"id":"transient-forced"}}'
   MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
-  r=$(new_sandbox automode)
+  r=$(new_sandbox)
   run_sync "$r"
 
   assert_eq "forced draft posts to the create-agent endpoint" \
@@ -257,13 +246,29 @@ test_preview_without_id_is_a_failure() {
   reset_env
   MOCK_RESPONSE='{"workflow":{}}'
   MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
-  r=$(new_sandbox automode)
+  r=$(new_sandbox)
   run_sync "$r"
 
   assert_eq "recorded as an error" "error" "$(result_field "$r" '.[0].status')"
   assert_eq "error names the missing transient id" \
     "preview returned no transient workflow id" "$(result_field "$r" '.[0].error')"
   assert_eq "no previewId is recorded" "null" "$(result_field "$r" '.[0].previewId')"
+  rm -rf "$r"
+}
+
+test_folder_without_spec_yaml_errors() {
+  echo "Test: an agent folder with no spec.yaml is rejected"
+  local r
+  reset_env
+  MOCK_CONVERTER_OUTPUT='{}'
+  r=$(new_sandbox)
+  rm -f "$r/agents/test-bench/spec.yaml"
+  run_sync "$r"
+
+  assert_eq "status is error" "error" "$(result_field "$r" '.[0].status')"
+  assert_eq "error names the missing spec.yaml" \
+    "no spec.yaml found — add one" "$(result_field "$r" '.[0].error')"
+  assert_eq "no request was sent" "MISSING" "$(captured_url "$r")"
   rm -rf "$r"
 }
 
@@ -274,7 +279,7 @@ test_preview_failure_records_error() {
   MOCK_HTTP_CODE="403"
   MOCK_RESPONSE='{"error":"forbidden"}'
   MOCK_CONVERTER_OUTPUT='{"id":"agent-123","name":"Auto Bench Agent","schema":{"goal":"do the thing"}}'
-  r=$(new_sandbox automode)
+  r=$(new_sandbox)
   run_sync "$r"
 
   assert_eq "status is error" "error" "$(result_field "$r" '.[0].status')"
@@ -298,6 +303,8 @@ echo ""
 test_preview_without_id_is_a_failure
 echo ""
 test_preview_failure_records_error
+echo ""
+test_folder_without_spec_yaml_errors
 
 echo ""
 echo "========================================="

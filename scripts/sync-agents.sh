@@ -21,34 +21,6 @@ append_result() {
   RESULTS=$(echo "$RESULTS" | jq -c "$@" "$filter" | jq -c --arg folder "$FOLDER" '.[-1] |= . + {folder: $folder}')
 }
 
-build_sync_request_workflow() {
-  local agent_id="$1"
-  local spec_json="$2"
-  local commit_sha="$3"
-  local publish="$4"   # boolean: true = publish immediately, false = stage only
-  local message="$5"
-  local git_author_id="$6"
-
-  echo "$spec_json" | jq -c \
-    --arg id "$agent_id" \
-    --arg sha "$commit_sha" \
-    --argjson publish "$publish" \
-    --arg msg "$message" \
-    --arg author "$git_author_id" \
-    '{
-      id: $id,
-      gitCommitSha: $sha,
-      workflowSource: "GIT",
-      name: .rootWorkflow.name,
-      description: .rootWorkflow.description,
-      icon: .rootWorkflow.icon,
-      schema: .rootWorkflow.schema
-    } + if ($author | length) > 0 then {gitAuthorId: $author} else {} end
-      + if $publish then {stagingOptions: {publish: true, commitMessage: $msg}}
-        else {stagingOptions: {save: true, commitMessage: $msg}}
-        end'
-}
-
 build_sync_request_automode() {
   local agent_id="$1"
   local converter_json="$2"
@@ -88,33 +60,6 @@ build_preview_request_automode() {
     }'
 }
 
-# Infers agent type from folder structure.
-# Prints "automode"  if spec.yaml is present (autonomous agent),
-#        "workflow"  if a .json spec file is present (workflow agent),
-#        "ambiguous" if both are found,
-#        "unknown"   if neither is found.
-detect_agent_mode() {
-  local folder_path="$1"
-  local has_spec_yaml=false
-  local has_json=false
-
-  [ -f "${folder_path}/spec.yaml" ] && has_spec_yaml=true
-
-  for f in "${folder_path}"/*.json; do
-    [ -f "$f" ] && has_json=true && break
-  done
-
-  if [ "$has_spec_yaml" = true ] && [ "$has_json" = true ]; then
-    echo "ambiguous"
-  elif [ "$has_spec_yaml" = true ]; then
-    echo "automode"
-  elif [ "$has_json" = true ]; then
-    echo "workflow"
-  else
-    echo "unknown"
-  fi
-}
-
 while IFS= read -r FOLDER; do
   FOLDER_PATH="${AGENT_DIR}/${FOLDER}"
   AGENT_DISPLAY_NAME="$FOLDER"
@@ -128,24 +73,17 @@ while IFS= read -r FOLDER; do
     continue
   fi
 
-  AGENT_MODE=$(detect_agent_mode "$FOLDER_PATH")
-  if [ "$AGENT_MODE" = "ambiguous" ]; then
-    echo "::error::Cannot determine agent type for ${FOLDER_PATH} — found both spec.yaml (autonomous) and .json files (workflow). Remove one."
-    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "ambiguous", "mode": "unknown", "status": "error", "error": "both spec.yaml and .json found — remove one to disambiguate"}]' \
+  AGENT_MODE="automode"
+  if [ ! -f "${FOLDER_PATH}/spec.yaml" ]; then
+    echo "::error::Missing spec.yaml in ${FOLDER_PATH} — every agent folder must contain a spec.yaml."
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "unknown", "status": "error", "error": "no spec.yaml found — add one"}]' \
       --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" 
-    HAS_FAILURE=true
-    continue
-  elif [ "$AGENT_MODE" = "unknown" ]; then
-    echo "::error::Cannot determine agent type for ${FOLDER_PATH} — expected either spec.yaml (autonomous agent) or a .json spec file (workflow agent)."
-    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": "unknown", "mode": "unknown", "status": "error", "error": "no spec.yaml or .json found — add one"}]' \
-      --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" 
+      --arg name "$AGENT_DISPLAY_NAME"
     HAS_FAILURE=true
     continue
   fi
 
-  # glean-sync.yaml is required for workflow agents; optional for autonomous agents.
+  # glean-sync.yaml is optional; spec.yaml carries the agent id.
   SYNC_FILE="${FOLDER_PATH}/glean-sync.yaml"
   AGENT_ID=""
   MESSAGE=""
@@ -155,18 +93,9 @@ while IFS= read -r FOLDER; do
     AGENT_ID=$(yq '."agent-id" // ""' "$SYNC_FILE")
     MESSAGE=$(yq '.message // ""' "$SYNC_FILE")
     AGENT_SYNC_MODE=$(yq '."sync-mode" // ""' "$SYNC_FILE")
-  elif [ "$AGENT_MODE" = "workflow" ]; then
-    echo "::error::Missing glean-sync.yaml in ${FOLDER_PATH} — workflow agents require a glean-sync.yaml with at least an agent-id field."
-    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "missing glean-sync.yaml — add one with at least agent-id"}]' \
-      --arg aid "$FOLDER" \
-      --arg name "$AGENT_DISPLAY_NAME" \
-      --arg agentMode "$AGENT_MODE" 
-    HAS_FAILURE=true
-    continue
   fi
 
-  # For autonomous agents without a glean-sync.yaml, derive the agent ID from spec.yaml directly.
-  if [ "$AGENT_MODE" = "automode" ] && [ -z "$AGENT_ID" ]; then
+  if [ -z "$AGENT_ID" ]; then
     AGENT_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
   fi
 
@@ -220,95 +149,59 @@ while IFS= read -r FOLDER; do
     REQUEST_URL="${INSTANCE_URL_BE}/rest/api/v1/agents"
   fi
 
-  if [ "$AGENT_MODE" = "workflow" ]; then
-    JSON_SPEC_FILES=()
-    for JSON_FILE in "${FOLDER_PATH}"/*.json; do
-      [ -f "$JSON_FILE" ] && JSON_SPEC_FILES+=("$JSON_FILE")
-    done
+  CONVERTER_STDERR_FILE="$RUNNER_TEMP/converter-stderr-${FOLDER}.txt"
+  set +e
+  CONVERTER_OUTPUT=$(uv run "$CONVERTER" to-json "$FOLDER" --dir "$AGENT_DIR" 2>"$CONVERTER_STDERR_FILE")
+  CONVERTER_EXIT=$?
+  set -e
 
-    if [ "${#JSON_SPEC_FILES[@]}" -gt 1 ]; then
-      echo "::error::Multiple .json files found in ${FOLDER_PATH} — exactly one spec file is allowed per agent folder."
-      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "multiple .json files found — keep exactly one spec file"}]' \
-        --arg aid "$AGENT_ID" \
-        --arg name "$AGENT_DISPLAY_NAME" \
-        --arg agentMode "$AGENT_MODE" 
-      HAS_FAILURE=true
-      continue
-    fi
+  if [ $CONVERTER_EXIT -ne 0 ]; then
+    CONVERTER_ERR=$(cat "$CONVERTER_STDERR_FILE" 2>/dev/null || echo "unknown converter error")
+    echo "::error::Converter failed for ${FOLDER} — ${CONVERTER_ERR}"
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
+      --arg aid "$AGENT_ID" \
+      --arg name "$AGENT_DISPLAY_NAME" \
+      --arg agentMode "$AGENT_MODE" \
+      --arg mode "$MODE" \
+      --arg err "Converter failed: $CONVERTER_ERR" 
+    HAS_FAILURE=true
+    continue
+  fi
 
-    SPEC_FILE="${JSON_SPEC_FILES[0]}"
+  if ! echo "$CONVERTER_OUTPUT" | jq empty 2>/dev/null; then
+    echo "::error::Converter produced invalid JSON for ${FOLDER} — check spec.yaml and instructions.md"
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "converter produced invalid JSON"}]' \
+      --arg aid "$AGENT_ID" \
+      --arg name "$AGENT_DISPLAY_NAME" \
+      --arg agentMode "$AGENT_MODE" \
+      --arg mode "$MODE" 
+    HAS_FAILURE=true
+    continue
+  fi
 
-    SPEC_JSON=$(cat "$SPEC_FILE")
-    if ! echo "$SPEC_JSON" | jq empty 2>/dev/null; then
-      echo "::error::Invalid JSON in ${SPEC_FILE}"
-      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "invalid JSON in spec file"}]' \
-        --arg aid "$AGENT_ID" \
-        --arg name "$AGENT_DISPLAY_NAME" \
-        --arg agentMode "$AGENT_MODE" 
-      HAS_FAILURE=true
-      continue
-    fi
-
-    WORKFLOW_NAME=$(echo "$SPEC_JSON" | jq -r '.rootWorkflow.name // ""')
-    [ -n "$WORKFLOW_NAME" ] && AGENT_DISPLAY_NAME="$WORKFLOW_NAME"
-
-    REQUEST_BODY=$(build_sync_request_workflow "$AGENT_ID" "$SPEC_JSON" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
-
-  elif [ "$AGENT_MODE" = "automode" ]; then
-    CONVERTER_STDERR_FILE="$RUNNER_TEMP/converter-stderr-${FOLDER}.txt"
-    set +e
-    CONVERTER_OUTPUT=$(uv run "$CONVERTER" to-json "$FOLDER" --dir "$AGENT_DIR" 2>"$CONVERTER_STDERR_FILE")
-    CONVERTER_EXIT=$?
-    set -e
-
-    if [ $CONVERTER_EXIT -ne 0 ]; then
-      CONVERTER_ERR=$(cat "$CONVERTER_STDERR_FILE" 2>/dev/null || echo "unknown converter error")
-      echo "::error::Converter failed for ${FOLDER} — ${CONVERTER_ERR}"
+  # When glean-sync.yaml is present, verify its agent-id matches spec.yaml to catch drift.
+  if [ -f "$SYNC_FILE" ]; then
+    SPEC_YAML_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
+    if [ -n "$SPEC_YAML_ID" ] && [ "$SPEC_YAML_ID" != "$AGENT_ID" ]; then
+      echo "::error::Agent ID mismatch in ${FOLDER} — glean-sync.yaml has '${AGENT_ID}' but spec.yaml has '${SPEC_YAML_ID}'. These must match."
       append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
         --arg aid "$AGENT_ID" \
         --arg name "$AGENT_DISPLAY_NAME" \
         --arg agentMode "$AGENT_MODE" \
         --arg mode "$MODE" \
-        --arg err "Converter failed: $CONVERTER_ERR" 
+        --arg err "Agent ID mismatch: glean-sync.yaml='$AGENT_ID' spec.yaml='$SPEC_YAML_ID'" 
       HAS_FAILURE=true
       continue
     fi
+  fi
 
-    if ! echo "$CONVERTER_OUTPUT" | jq empty 2>/dev/null; then
-      echo "::error::Converter produced invalid JSON for ${FOLDER} — check spec.yaml and instructions.md"
-      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "converter produced invalid JSON"}]' \
-        --arg aid "$AGENT_ID" \
-        --arg name "$AGENT_DISPLAY_NAME" \
-        --arg agentMode "$AGENT_MODE" \
-        --arg mode "$MODE" 
-      HAS_FAILURE=true
-      continue
-    fi
+  AUTOMODE_NAME=$(echo "$CONVERTER_OUTPUT" | jq -r '.name // ""')
+  [ -n "$AUTOMODE_NAME" ] && AGENT_DISPLAY_NAME="$AUTOMODE_NAME"
 
-    # When glean-sync.yaml is present, verify its agent-id matches spec.yaml to catch drift.
-    if [ -f "$SYNC_FILE" ]; then
-      SPEC_YAML_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
-      if [ -n "$SPEC_YAML_ID" ] && [ "$SPEC_YAML_ID" != "$AGENT_ID" ]; then
-        echo "::error::Agent ID mismatch in ${FOLDER} — glean-sync.yaml has '${AGENT_ID}' but spec.yaml has '${SPEC_YAML_ID}'. These must match."
-        append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": $err}]' \
-          --arg aid "$AGENT_ID" \
-          --arg name "$AGENT_DISPLAY_NAME" \
-          --arg agentMode "$AGENT_MODE" \
-          --arg mode "$MODE" \
-          --arg err "Agent ID mismatch: glean-sync.yaml='$AGENT_ID' spec.yaml='$SPEC_YAML_ID'" 
-        HAS_FAILURE=true
-        continue
-      fi
-    fi
-
-    AUTOMODE_NAME=$(echo "$CONVERTER_OUTPUT" | jq -r '.name // ""')
-    [ -n "$AUTOMODE_NAME" ] && AGENT_DISPLAY_NAME="$AUTOMODE_NAME"
-
-    if [ "$IS_PREVIEW" = "true" ]; then
-      REQUEST_BODY=$(build_preview_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT")
-    else
-      REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
-    fi
+  if [ "$IS_PREVIEW" = "true" ]; then
+    REQUEST_BODY=$(build_preview_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT")
+  else
+    REQUEST_BODY=$(build_sync_request_automode "$AGENT_ID" "$CONVERTER_OUTPUT" "$COMMIT_SHA" "$PUBLISH" "$MESSAGE" "${PR_AUTHOR:-}")
   fi
 
   echo "Agent: $AGENT_ID (folder: $FOLDER)"
