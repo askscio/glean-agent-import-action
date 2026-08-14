@@ -26,3 +26,7 @@ jobs:
         run: bash tests/test-detect-changes.sh
       - name: resolve-shared-deps tests
         run: bash tests/test-resolve-shared-deps.sh
+      - name: sync-agents tests
+        run: bash tests/test-sync-agents.sh
+      - name: comment-pr tests
+        run: bash tests/test-comment-pr.sh

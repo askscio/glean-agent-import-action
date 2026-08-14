@@ -28,18 +28,18 @@ TABLE_ROWS=""
 RETRY_COMMANDS=""
 
 while IFS= read -r ROW; do
-  AID=$(echo "$ROW" | jq -r '.agentId')
   ANAME=$(echo "$ROW" | jq -r '.agentName // .agentId')
   FOLDER=$(echo "$ROW" | jq -r '.folder // .agentId')
   STATUS=$(echo "$ROW" | jq -r '.status')
 
   if [ "$STATUS" = "success" ]; then
-    STATUS_TEXT=":white_check_mark: Draft Preview"
-    PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${AID}/edit?qe=${BE_ENCODED})"
+    STATUS_TEXT=":white_check_mark: Preview"
+    PID=$(echo "$ROW" | jq -r '.previewId')
+    PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${PID}/preview?qe=${BE_ENCODED})"
     RETRY="—"
   else
     HAS_FAILURES=true
-    STATUS_TEXT=":x: Draft Preview"
+    STATUS_TEXT=":x: Preview"
     ERR=$(echo "$ROW" | jq -r '.error // "Failed"')
     PREVIEW="$ERR"
     if [ -n "$RETRY_WORKFLOW_URL" ]; then
@@ -55,7 +55,7 @@ done < <(jq -c '.[]' "$RESULTS_FILE")
 
 {
   echo "${MARKER}"
-  echo "## Glean Agent Sync — Draft Preview"
+  echo "## Glean Agent Sync — Preview"
   echo ""
   echo "| Agent | Status | Preview | Retry |"
   echo "|-------|--------|---------|-------|"

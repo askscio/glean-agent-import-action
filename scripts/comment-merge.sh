@@ -29,14 +29,15 @@ while IFS= read -r ROW; do
   SYNC_MODE=$(echo "$ROW" | jq -r '.mode // empty')
 
   if [ "$STATUS" = "success" ]; then
+    LINK="[Run in Glean](${INSTANCE_URL_FE}/chat/agents/${AID})"
     if [ "$SYNC_MODE" = "published" ]; then
       STATUS_TEXT=":rocket: Published"
     elif [ "$SYNC_MODE" = "draft_preview" ]; then
-      STATUS_TEXT=":pencil: Draft preview"
+      STATUS_TEXT=":pencil: Preview"
+      LINK="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/$(echo "$ROW" | jq -r '.previewId')/preview)"
     else
       STATUS_TEXT=":white_check_mark: Staged"
     fi
-    LINK="[Run in Glean](${INSTANCE_URL_FE}/chat/agents/${AID})"
   else
     HAS_FAILURE=true
     STATUS_TEXT=":x: Sync failed"
