@@ -188,6 +188,29 @@ def _glean_search_config_to_action(glean_search_config: dict | None) -> dict | N
     }
 
 
+def _actions_config_to_actions(actions_config: list[dict] | None, glean_search_config: dict | None) -> list[dict]:
+    """Convert standalone actions from spec.yaml and append the special Glean Search action."""
+    actions: list[dict] = []
+    seen_action_ids: set[str] = set()
+    for index, action in enumerate(actions_config or []):
+        if not isinstance(action, dict):
+            raise ValueError(f'actions[{index}] must be a mapping')
+        action_id = action.get('actionId')
+        if not isinstance(action_id, str) or not action_id.strip():
+            raise ValueError(f'actions[{index}].actionId must be a non-empty string')
+        if action_id == GLEAN_SEARCH_ACTION_ID:
+            raise ValueError('Configure Glean Search with gleanSearchConfig, not actions')
+        if action_id in seen_action_ids:
+            raise ValueError(f'duplicate actionId in actions: {action_id!r}')
+        seen_action_ids.add(action_id)
+        actions.append(dict(action))
+
+    glean_action = _glean_search_config_to_action(glean_search_config)
+    if glean_action is not None:
+        actions.append(glean_action)
+    return actions
+
+
 def _extract_model_from_file(model: dict | None) -> dict:
     if not model:
         return {}
@@ -246,6 +269,11 @@ def _extract_glean_search_config(actions: list[dict]) -> dict | None:
             flat['urls'] = list(inclusions['urls'])
         return flat
     return None
+
+
+def _extract_standalone_actions(actions: list[dict]) -> list[dict]:
+    """Return non-Glean-Search actions for round-tripping into spec.yaml."""
+    return [dict(action) for action in actions if action.get('actionId') != GLEAN_SEARCH_ACTION_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -534,9 +562,9 @@ class FolderToJsonConverter:
             if skills:
                 subagent['skills'] = skills
 
-        glean_action = _glean_search_config_to_action(spec.get('gleanSearchConfig'))
-        if glean_action is not None:
-            subagent['actions'] = [glean_action]
+        actions = _actions_config_to_actions(spec.get('actions'), spec.get('gleanSearchConfig'))
+        if actions:
+            subagent['actions'] = actions
 
         subagent.update(_extract_model_from_file(spec.get('model')))
 
@@ -558,9 +586,9 @@ class FolderToJsonConverter:
     async def _build_autonomous_agent_config(self, agent_dir: Path, spec: dict, instructions: str) -> dict:
         config: dict[str, Any] = {}
 
-        glean_action = _glean_search_config_to_action(spec.get('gleanSearchConfig'))
-        if glean_action is not None:
-            config['actions'] = [glean_action]
+        actions = _actions_config_to_actions(spec.get('actions'), spec.get('gleanSearchConfig'))
+        if actions:
+            config['actions'] = actions
 
         tools_config = spec.get('tools', [])
         if tools_config:
@@ -658,6 +686,10 @@ class JsonToFolderConverter:
         if glean_search_config is not None:
             spec['gleanSearchConfig'] = glean_search_config
 
+        standalone_actions = _extract_standalone_actions(agent_config.get('actions', []))
+        if standalone_actions:
+            spec['actions'] = standalone_actions
+
         model_block = _extract_model_from_json(agent_config)
         if model_block is not None:
             spec['model'] = model_block
@@ -739,6 +771,10 @@ class JsonToFolderConverter:
             glean_search_config = _extract_glean_search_config(subagent.get('actions', []))
             if glean_search_config is not None:
                 sub_spec['gleanSearchConfig'] = glean_search_config
+
+            standalone_actions = _extract_standalone_actions(subagent.get('actions', []))
+            if standalone_actions:
+                sub_spec['actions'] = standalone_actions
 
             model_block = _extract_model_from_json(subagent)
             if model_block is not None:
