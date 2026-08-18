@@ -94,7 +94,11 @@ name: My Agent
 description: Does something useful
 tools:
   - toolProviderId: glean-search
+actions:
+  - actionId: bravewebsearch
 ```
+
+Use `tools` for MCP/action servers and `actions` for standalone built-in actions. Glean Search remains configured through `gleanSearchConfig` so its knowledge-source restrictions can be represented cleanly.
 
 ### `glean-sync.yaml` reference
 
