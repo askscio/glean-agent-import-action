@@ -596,6 +596,10 @@ class FolderToJsonConverter:
             if tool_servers:
                 config['actionServers'] = tool_servers
 
+        service_credentials = spec.get('serviceCredentials', [])
+        if service_credentials:
+            config['serviceCredentials'] = service_credentials
+
         skill_paths = spec.get('skills', [])
         if skill_paths:
             skills = await self._parse_skills(agent_dir, skill_paths)
@@ -681,6 +685,10 @@ class JsonToFolderConverter:
         action_servers = agent_config.get('actionServers', [])
         if action_servers:
             spec['tools'] = self._action_servers_to_tools_config(action_servers)
+
+        service_credentials = agent_config.get('serviceCredentials', [])
+        if service_credentials:
+            spec['serviceCredentials'] = service_credentials
 
         glean_search_config = _extract_glean_search_config(agent_config.get('actions', []))
         if glean_search_config is not None:

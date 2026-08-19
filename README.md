@@ -96,9 +96,12 @@ tools:
   - toolProviderId: glean-search
 actions:
   - actionId: bravewebsearch
+serviceCredentials:
+  - credentialId: credential-abc123
 ```
 
 Use `tools` for MCP/action servers and `actions` for standalone built-in actions. Glean Search remains configured through `gleanSearchConfig` so its knowledge-source restrictions can be represented cleanly.
+Use `serviceCredentials` for service-account credentials the agent may access at runtime.
 
 ### `glean-sync.yaml` reference
 

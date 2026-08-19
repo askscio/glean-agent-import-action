@@ -130,5 +130,35 @@ class StandaloneActionsTest(unittest.TestCase):
             )
 
 
+class ServiceCredentialsTest(unittest.TestCase):
+    def test_folder_to_json_emits_service_credentials(self) -> None:
+        converter = FolderToJsonConverter(Path('.'))
+        credentials = [{'credentialId': 'credential-id'}]
+
+        config = asyncio.run(
+            converter._build_autonomous_agent_config(
+                Path('.'),
+                {'serviceCredentials': credentials},
+                '',
+            )
+        )
+
+        self.assertEqual(config['serviceCredentials'], credentials)
+
+    def test_json_to_folder_round_trips_service_credentials(self) -> None:
+        converter = JsonToFolderConverter(Path('.'))
+        credentials = [{'credentialId': 'credential-id'}]
+
+        spec = converter._build_spec(
+            {'id': 'agent-id', 'name': 'Agent'},
+            {},
+            {'serviceCredentials': credentials},
+            [],
+            [],
+        )
+
+        self.assertEqual(spec['serviceCredentials'], credentials)
+
+
 if __name__ == '__main__':
     unittest.main()
