@@ -50,10 +50,6 @@ runs:
         SPECIFIC_AGENT_FOLDER: ${{ github.event.inputs.agent_folder }}
       run: ${{ github.action_path }}/scripts/detect-changes.sh
 
-    - name: Install uv (for auto-mode agent converter)
-      if: steps.detect.outputs.folders != '[]'
-      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-
     - name: Install yq
       if: steps.detect.outputs.folders != '[]'
       shell: bash
