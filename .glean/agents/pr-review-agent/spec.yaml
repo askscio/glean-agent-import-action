@@ -1,0 +1,23 @@
+id: 6421c30c5c4b4b1e90b818de435d2ff3
+
+name: PR Review agent
+
+description: A
+
+instructionFile: instructions.md
+
+gleanSearchConfig: {}
+
+model:
+  name: GPT_5_6_LUNA_MS
+  mode: ADVANCED
+  autoUpgrade: true
+
+trigger:
+  type: CHAT_MESSAGE
+
+icon:
+  backgroundColor: var(--theme-brand-light-blue-50)
+  color: '#333'
+  iconType: GLYPH
+  name: rocket-2
