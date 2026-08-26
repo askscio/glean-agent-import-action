@@ -76,8 +76,8 @@ test_preview() {
   assert_eq preview-parent 'parentWorkflowId=agent-123' "$(field parentWorkflowId=agent-123 "$r")"
   assert_eq preview-id transient-999 "$(result "$r" '.[0].previewId')"
   unzip -Z1 "$r/capture/bundle.zip" > "$r/entries"
-  assert_eq zip-root-spec true "$(grep -qx 'spec.yaml' "$r/entries" && echo true || echo false)"
-  assert_eq zip-dotfile true "$(grep -qx 'skills/.hidden/file.md' "$r/entries" && echo true || echo false)"
+  assert_eq zip-root-directory true "$(grep -qx 'test-bench/spec.yaml' "$r/entries" && echo true || echo false)"
+  assert_eq zip-dotfile true "$(grep -qx 'test-bench/skills/.hidden/file.md' "$r/entries" && echo true || echo false)"
   rm -rf "$r"
 }
 

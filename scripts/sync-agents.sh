@@ -19,7 +19,7 @@ append_result() {
 }
 
 package_agent_bundle() {
-  local folder_path="$1" bundle_file="$2" materialized repo_root target resolved
+  local folder_path="$1" bundle_file="$2" materialized bundle_root repo_root target resolved
   command -v zip >/dev/null 2>&1 || {
     echo "::error::The zip utility is required to import agent folders; install zip on the runner."
     return 1
@@ -32,6 +32,8 @@ package_agent_bundle() {
   }
   materialized="$(mktemp -d "${RUNNER_TEMP}/agent-bundle.XXXXXX")"
   BUNDLE_MATERIALIZED_DIRS+=("$materialized")
+  bundle_root="$materialized/$(basename "$folder_path")"
+  mkdir -p "$bundle_root"
 
   while IFS= read -r -d '' target; do
     resolved="$(realpath "$target")"
@@ -44,8 +46,8 @@ package_agent_bundle() {
     esac
   done < <(find "$folder_path" -type l -print0)
 
-  cp -aL "$folder_path"/. "$materialized"/
-  rm -f "$materialized/glean-sync.yaml"
+  cp -aL "$folder_path"/. "$bundle_root"/
+  rm -f "$bundle_root/glean-sync.yaml"
   (
     cd "$materialized"
     zip -q -r "$bundle_file" .

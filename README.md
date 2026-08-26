@@ -124,7 +124,7 @@ To publish on merge, set `default-sync-mode: published` on the action input, or 
 ## How it works
 
 1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
-2. **Package** — packages each agent folder's contents into a ZIP rooted at `spec.yaml`. Symlinks are validated to stay inside the checkout, then dereferenced so the upload contains only regular files and directories, including dotfiles and nested assets.
+2. **Package** — packages each agent folder into a ZIP with one top-level agent directory, matching the server’s import format. Symlinks are validated to stay inside the checkout, then dereferenced so the upload contains only regular files and directories, including dotfiles and nested assets.
 3. **Import** — uploads the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. The server performs the canonical folder-to-workflow conversion. Staged and published imports preserve their existing behavior; PR imports use an isolated transient preview parented to the real agent.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
