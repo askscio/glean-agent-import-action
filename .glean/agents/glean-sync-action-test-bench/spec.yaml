@@ -1,6 +1,6 @@
 id: 302f462f7adb4675b111cc486f826bab
 
-name: Glean Sync Action Test Bench
+name: Glean Sync Action Test Bench - Zip
 
 description: >
   Test agent for locally validating Glean sync action changes across platform
