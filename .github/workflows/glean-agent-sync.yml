@@ -98,7 +98,7 @@ jobs:
       - uses: ./
         with:
           instance-url-fe: https://app.glean.com
-          instance-url-be: https://salessavvy-test-be.glean.com/
+          instance-url-be: https://salessavvy-test-be.glean.com/qe-glean-exp/101
           api-token: ${{ secrets.GLEAN_AGENT_SYNC_TOKEN }}
           shared-root: .glean/common
           pr-head-ref: ${{ steps.pr.outputs.head_ref }}
