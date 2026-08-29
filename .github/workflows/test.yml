@@ -6,14 +6,12 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - '.github/workflows/test.yml'
-      - 'action.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/**'
       - 'tests/**'
       - '.github/workflows/test.yml'
-      - 'action.yml'
 
 jobs:
   bash-tests:
