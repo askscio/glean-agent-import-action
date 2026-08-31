@@ -52,7 +52,7 @@ jobs:
 |-------|----------|---------|-------------|
 | `instance-url-fe` | ✅ | — | Frontend instance URL used for preview/run links in PR comments (e.g. `https://acme.glean.com`) |
 | `instance-url-be` | ✅ | — | Backend instance URL for API calls (e.g. `https://acme-be.glean.com`) |
-| `api-token` | ✅ | — | Glean client API token with `AGENTS` scope |
+| `api-token` | ✅ | — | Glean client API token with `AGENTS` (legacy) or `AGENTS_WRITE` scope |
 | `agent-directory` | ❌ | `.glean/agents` | Path within the repo where agent folders live |
 | `shared-root` | ❌ | `.glean/common` | Root directory for shared reusable agent resources. Changes here trigger downstream agent re-sync via symlink dependency resolution. |
 | `default-sync-mode` | ❌ | `staged` | Default sync mode on push/merge: `staged` or `published`. Can be overridden per-agent via `sync-mode` in `glean-sync.yaml` |
@@ -124,8 +124,8 @@ To publish on merge, set `default-sync-mode: published` on the action input, or 
 ## How it works
 
 1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
-2. **Convert** — converts each agent folder's `spec.yaml` into the Glean workflow spec JSON format using `agent_converter.py`.
-3. **Sync** — for PR previews, calls `POST /rest/api/v1/agents` to create a throwaway preview agent parented to the real one. For staged/published syncs on merge, calls `POST /rest/api/v1/agents/{id}` to update the real agent.
+2. **Package** — packages each agent folder into a ZIP with one top-level agent directory, matching the server’s import format. Symlinks are validated to stay inside the checkout, then dereferenced so the upload contains only regular files and directories, including dotfiles and nested assets.
+3. **Import** — uploads the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. The server performs the canonical folder-to-workflow conversion. Staged and published imports preserve their existing behavior; PR imports use an isolated transient preview parented to the real agent.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
 ## Shared resources (`shared-root`)
@@ -203,4 +203,4 @@ jobs:
 
 ## API token
 
-Create a Glean client API token with the **`AGENTS`** scope and store it as a GitHub Actions secret (e.g. `GLEAN_API_TOKEN`).
+Create a Glean client API token with the **`AGENTS`** (legacy) or **`AGENTS_WRITE`** scope and store it as a GitHub Actions secret (e.g. `GLEAN_API_TOKEN`).
