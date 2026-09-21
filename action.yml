@@ -19,7 +19,7 @@ inputs:
     required: false
     default: '.glean/common'
   api-token:
-    description: 'Glean client API token with AGENTS scope'
+    description: 'Glean client API token with AGENTS_WRITE scope (AGENTS legacy scope is also supported)'
     required: true
   default-sync-mode:
     description: 'Default sync mode for agents on push to master: "staged" (default) or "published". Can be overridden per-agent via the sync-mode field in glean-sync.yaml.'
@@ -31,7 +31,7 @@ inputs:
     default: ''
 outputs:
   synced-agents:
-    description: 'JSON array of synced agent summaries [{agentId, mode, status}]'
+    description: 'JSON array of synced agent summaries. status may be success, error, or conflict; durable results may include resultHash and baselineHash.'
     value: ${{ steps.sync.outputs.synced-agents }}
 
 runs:

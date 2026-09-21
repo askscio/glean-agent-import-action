@@ -28,3 +28,5 @@ jobs:
         run: bash tests/test-sync-agents.sh
       - name: comment-pr tests
         run: bash tests/test-comment-pr.sh
+      - name: comment-merge tests
+        run: bash tests/test-comment-merge.sh

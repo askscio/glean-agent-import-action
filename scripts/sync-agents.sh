@@ -94,8 +94,14 @@ while IFS= read -r FOLDER; do
     AGENT_ID=$(yq '."agent-id" // ""' "$SYNC_FILE")
     MESSAGE=$(yq '.message // ""' "$SYNC_FILE")
     AGENT_SYNC_MODE=$(yq '."sync-mode" // ""' "$SYNC_FILE")
+    BASE_PUBLISHED_HASH=$(yq '."base-published-definition-hash" // ""' "$SYNC_FILE" \
+      | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  else
+    BASE_PUBLISHED_HASH=""
   fi
   SPEC_YAML_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
+  AGENT_DISPLAY_NAME=$(yq '.name // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
+  [ -n "$AGENT_DISPLAY_NAME" ] || AGENT_DISPLAY_NAME="$FOLDER"
   [ -n "$AGENT_ID" ] || AGENT_ID="$SPEC_YAML_ID"
   [ -n "$MESSAGE" ] || MESSAGE="${DEFAULT_MESSAGE:-}"
 
@@ -124,6 +130,20 @@ while IFS= read -r FOLDER; do
   if [ "${FORCE_DRAFT:-false}" != "true" ] && { [ "$EVENT_NAME" != "pull_request" ] && { [ "$EVENT_NAME" != "workflow_dispatch" ] || [ -z "${PR_RETRY:-}" ]; }; }; then
     MODE="$EFFECTIVE_SYNC_MODE"
   fi
+  SEND_BASELINE=false
+  if [ "$MODE" = "published" ]; then
+    if [ -z "$BASE_PUBLISHED_HASH" ]; then
+      echo "::notice::Agent ${AGENT_ID}: no base-published-definition-hash in glean-sync.yaml; publishing without the stale-baseline guard. Pull/export the agent with the headless builder to enable it."
+    elif [[ "$BASE_PUBLISHED_HASH" =~ ^[A-Za-z0-9._:-]{16,}$ ]]; then
+      SEND_BASELINE=true
+    else
+      echo "::error::Agent ${AGENT_ID}: base-published-definition-hash in ${SYNC_FILE} is malformed ('${BASE_PUBLISHED_HASH}'). Re-export the agent to regenerate glean-sync.yaml."
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "malformed base-published-definition-hash"}]' \
+        --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE"
+      HAS_FAILURE=true
+      continue
+    fi
+  fi
   IS_PREVIEW=false
   REQUEST_URL="${INSTANCE_URL_BE}/rest/api/v1/agents/${AGENT_ID}/import"
   if [ "$MODE" = "draft_preview" ]; then
@@ -136,8 +156,6 @@ while IFS= read -r FOLDER; do
     continue
   fi
 
-  AGENT_DISPLAY_NAME=$(yq '.name // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
-  [ -n "$AGENT_DISPLAY_NAME" ] || AGENT_DISPLAY_NAME="$FOLDER"
   echo "Agent: $AGENT_ID (folder: $FOLDER)"
   echo "  Mode: $MODE | AgentMode: $AGENT_MODE | Message: $MESSAGE"
 
@@ -146,6 +164,10 @@ while IFS= read -r FOLDER; do
     CURL_ARGS+=(-F "transient=true" -F "parentWorkflowId=${AGENT_ID}")
   else
     CURL_ARGS+=(-F "syncMode=$(printf '%s' "$EFFECTIVE_SYNC_MODE" | tr '[:lower:]' '[:upper:]')")
+    CURL_ARGS+=(-F "versionSource=GIT")
+    if [ "$SEND_BASELINE" = "true" ]; then
+      CURL_ARGS+=(-F "publishedBaselineHash=${BASE_PUBLISHED_HASH}")
+    fi
   fi
   [ -n "${COMMIT_SHA:-}" ] && CURL_ARGS+=(-F "gitCommitSha=${COMMIT_SHA}")
   [ -n "${PR_AUTHOR:-}" ] && CURL_ARGS+=(-F "gitAuthorId=${PR_AUTHOR}")
@@ -165,6 +187,15 @@ while IFS= read -r FOLDER; do
   EXPECTED_STATUS="UPDATED"
   [ "$IS_PREVIEW" = "true" ] && EXPECTED_STATUS="DRAFT_PREVIEW"
   ACTUAL_STATUS=$(jq -r '.status // .workflowResult.status // ""' "$RESPONSE_FILE" 2>/dev/null || echo "")
+  if [ "$HTTP_CODE" -eq 409 ]; then
+    RESP_BODY=$(tr '\n' ' ' < "$RESPONSE_FILE" 2>/dev/null || echo "no response body")
+    echo "::error::Agent ${AGENT_ID} was published outside Git since the repo baseline was taken (HTTP 409): ${RESP_BODY}. Pull/export the latest published version with the headless builder, commit the refreshed glean-sync.yaml, and re-merge."
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "conflict", "error": $err, "baselineHash": $base}]' \
+      --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE" \
+      --arg err "stale published baseline (HTTP 409)" --arg base "$BASE_PUBLISHED_HASH"
+    HAS_FAILURE=true
+    continue
+  fi
   if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
     RESP_BODY=$(cat "$RESPONSE_FILE" 2>/dev/null || echo "no response body")
     echo "::error::Failed to sync agent $AGENT_ID (HTTP $HTTP_CODE): $RESP_BODY"
@@ -190,7 +221,12 @@ while IFS= read -r FOLDER; do
     fi
   fi
   echo "  Synced successfully (HTTP $HTTP_CODE)"
-  append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "previewId": $pid, "status": "success"}]' --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE" --arg msg "$MESSAGE" --arg pid "$PREVIEW_ID"
+  if [ "$IS_PREVIEW" = "true" ]; then
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "previewId": $pid, "status": "success"}]' --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE" --arg msg "$MESSAGE" --arg pid "$PREVIEW_ID"
+  else
+    RESULT_HASH=$(jq -r 'if .workflowResult.workflow.stagedCommit.definitionHash then .workflowResult.workflow.stagedCommit.definitionHash else (.workflowResult.workflow.definitionHash // "") end' "$RESPONSE_FILE" 2>/dev/null || echo "")
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "message": $msg, "previewId": $pid, "status": "success", "resultHash": $rh}]' --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE" --arg msg "$MESSAGE" --arg pid "$PREVIEW_ID" --arg rh "$RESULT_HASH"
+  fi
 done < <(echo "$FOLDERS_JSON" | jq -r '.[]')
 
 echo "$RESULTS" > "$RUNNER_TEMP/agent-sync-results.json"

@@ -61,7 +61,7 @@ jobs:
 
 | Output | Description |
 |--------|-------------|
-| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, previewId, status}]`. `previewId` is the transient preview workflow's id, set only for `draft_preview`. |
+| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, previewId, status}]`. `status` may be `success`, `error`, or `conflict`; durable results may include `resultHash` and `baselineHash`. `previewId` is the transient preview workflow's id, set only for `draft_preview`. |
 
 ## Workflow dispatch inputs
 
@@ -109,6 +109,7 @@ Use `serviceCredentials` for service-account credentials the agent may access at
 agent-id: agent-abc123    # Required for workflow agents; optional override for autonomous agents
 sync-mode: staged         # Optional: "staged" (default) or "published"
 message: "My release note" # Optional: version message shown in Glean (defaults to PR title or commit subject)
+base-published-definition-hash: 3f2a9c... # Optional: published baseline from export/headless builder pull
 ```
 
 ## Sync modes
@@ -121,11 +122,26 @@ message: "My release note" # Optional: version message shown in Glean (defaults 
 
 To publish on merge, set `default-sync-mode: published` on the action input, or set `sync-mode: published` in a specific agent's `glean-sync.yaml`.
 
+## Published baseline guard
+
+`base-published-definition-hash` records the published definition hash observed when the agent was exported or pulled by the headless builder. The Action reads this value but never writes it. Refresh the export or headless-builder pull after a successful publish to update the repository baseline.
+
+| Configuration | Behavior |
+|---|---|
+| `staged` | The baseline is ignored; staged sync remains last-write-wins. |
+| `published` with a plausible baseline | Sends the baseline to the server, which rejects a stale publish with HTTP 409. |
+| `published` without a baseline | Publishes without the guard and emits a notice. |
+| `published` with a malformed baseline | Fails locally before making a request. |
+
+An HTTP 409 means the agent was published outside this Git sync after the repository baseline was taken. The Action marks the result as `conflict`, leaves the server-side agent unchanged, and reports the server message. Pull/export the latest published version, commit the refreshed `glean-sync.yaml`, and re-merge. A successful published sync reports its new hash in the merge comment as a recovery aid.
+
+Durable syncs now send `versionSource=GIT`, so synced versions appear as **Synced from Git** in builder version history. This is version-level provenance; Git sync no longer makes the agent read-only in the UI.
+
 ## How it works
 
 1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
 2. **Package** — packages each agent folder into a ZIP with one top-level agent directory, matching the server’s import format. Symlinks are validated to stay inside the checkout, then dereferenced so the upload contains only regular files and directories, including dotfiles and nested assets.
-3. **Import** — uploads the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. The server performs the canonical folder-to-workflow conversion. Staged and published imports preserve their existing behavior; PR imports use an isolated transient preview parented to the real agent.
+3. **Import** — uploads the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. Durable imports include `syncMode=STAGED|PUBLISHED` and `versionSource=GIT`, plus Git metadata when available. Published imports include `publishedBaselineHash` when the sidecar provides a plausible baseline. PR imports remain isolated transient previews and do not send provenance or baseline fields.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
 ## Shared resources (`shared-root`)
