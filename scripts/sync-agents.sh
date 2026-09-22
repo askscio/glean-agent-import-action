@@ -127,7 +127,7 @@ while IFS= read -r FOLDER; do
   fi
 
   MODE="draft_preview"
-  if [ "${FORCE_DRAFT:-false}" != "true" ] && { [ "$EVENT_NAME" != "pull_request" ] && { [ "$EVENT_NAME" != "workflow_dispatch" ] || [ -z "${PR_RETRY:-}" ]; }; }; then
+  if [ "${FORCE_DRAFT:-false}" != "true" ] && { [ "$EVENT_NAME" != "workflow_dispatch" ] || [ -z "${PR_RETRY:-}" ]; }; then
     MODE="$EFFECTIVE_SYNC_MODE"
   fi
   SEND_BASELINE=false

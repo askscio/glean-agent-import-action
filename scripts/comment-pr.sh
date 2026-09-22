@@ -29,13 +29,23 @@ RETRY_COMMANDS=""
 
 while IFS= read -r ROW; do
   ANAME=$(echo "$ROW" | jq -r '.agentName // .agentId')
+  AID=$(echo "$ROW" | jq -r '.agentId')
   FOLDER=$(echo "$ROW" | jq -r '.folder // .agentId')
   STATUS=$(echo "$ROW" | jq -r '.status')
 
   if [ "$STATUS" = "success" ]; then
-    STATUS_TEXT=":white_check_mark: Preview"
-    PID=$(echo "$ROW" | jq -r '.previewId')
-    PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${PID}/preview?qe=${BE_ENCODED})"
+    MODE=$(echo "$ROW" | jq -r '.mode // "draft_preview"')
+    if [ "$MODE" = "published" ]; then
+      STATUS_TEXT=":rocket: Published"
+      PREVIEW="[Open in Glean](${INSTANCE_URL_FE}/chat/agents/${AID}?qe=${BE_ENCODED})"
+    elif [ "$MODE" = "staged" ]; then
+      STATUS_TEXT=":white_check_mark: Staged"
+      PREVIEW="[Open in Glean](${INSTANCE_URL_FE}/chat/agents/${AID}?qe=${BE_ENCODED})"
+    else
+      STATUS_TEXT=":white_check_mark: Preview"
+      PID=$(echo "$ROW" | jq -r '.previewId')
+      PREVIEW="[Preview in Glean](${INSTANCE_URL_FE}/chat/agents/${PID}/preview?qe=${BE_ENCODED})"
+    fi
     RETRY="—"
   else
     HAS_FAILURES=true
