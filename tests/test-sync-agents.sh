@@ -71,7 +71,8 @@ result() { jq -r "$2" "$1/tmp/agent-sync-results.json" 2>/dev/null || echo MISSI
 
 test_preview() {
   local r
-  EVENT_NAME=pull_request
+  EVENT_NAME=workflow_dispatch
+  PR_RETRY=retry
   MOCK_RESPONSE='{"status":"DRAFT_PREVIEW","workflowResult":{"workflow":{"id":"transient-999"}}}'
   r=$(new_sandbox)
   run_sync "$r"
@@ -84,6 +85,21 @@ test_preview() {
   unzip -Z1 "$r/capture/bundle.zip" > "$r/entries"
   assert_eq zip-root-directory true "$(grep -qx 'test-bench/spec.yaml' "$r/entries" && echo true || echo false)"
   assert_eq zip-dotfile true "$(grep -qx 'test-bench/skills/.hidden/file.md' "$r/entries" && echo true || echo false)"
+  rm -rf "$r"
+}
+
+test_pull_request_published() {
+  local r
+  EVENT_NAME=pull_request
+  PR_RETRY=""
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published\nbase-published-definition-hash: abcdef0123456789abcd')
+  run_sync "$r"
+  assert_eq pull-request-mode 'syncMode=PUBLISHED' "$(field syncMode=PUBLISHED "$r")"
+  assert_eq pull-request-version-source 'versionSource=GIT' "$(field versionSource=GIT "$r")"
+  assert_eq pull-request-baseline 'publishedBaselineHash=abcdef0123456789abcd' "$(field publishedBaselineHash=abcdef0123456789abcd "$r")"
+  assert_eq pull-request-status success "$(result "$r" '.[0].status')"
   rm -rf "$r"
 }
 
@@ -214,6 +230,7 @@ test_outside_symlink() {
 }
 
 test_preview
+test_pull_request_published
 test_durable staged
 test_durable published
 test_published_with_baseline
