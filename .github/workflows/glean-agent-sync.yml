@@ -9,6 +9,11 @@ on:
       - 'action.yml'
       - 'scripts/**'
       - '.github/workflows/glean-agent-sync.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.glean/agents/**'
+      - '.glean/common/**'
   issue_comment:
     types: [created]
   workflow_dispatch:
