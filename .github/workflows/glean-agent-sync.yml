@@ -90,7 +90,7 @@ jobs:
             git fetch origin "${{ github.event.before }}" --depth=1 || true
           fi
 
-      - uses: askscio/glean-agent-import-action@feat/pre-merge-publish-test-2
+      - uses: askscio/glean-agent-import-action@v1.0-beta.10-test.2
         with:
           instance-url-fe: https://app.glean.com
           instance-url-be: https://salessavvy-test-be.glean.com/qe-glean-exp/100
