@@ -19,14 +19,17 @@ assert_eq() {
 }
 
 new_sandbox() {
-  local root
+  local root mode="${1:-staged}" sync_body="${2:-}"
   root=$(mktemp -d)
   mkdir -p "$root/bin" "$root/capture" "$root/tmp" "$root/repo/agents/test-bench/skills/.hidden" "$root/repo/agents/test-bench/subagents"
   printf 'id: agent-123\nname: Auto Bench Agent\n' > "$root/repo/agents/test-bench/spec.yaml"
   printf 'instructions\n' > "$root/repo/agents/test-bench/instructions.md"
   printf 'nested skill\n' > "$root/repo/agents/test-bench/skills/.hidden/file.md"
   printf 'subagent\n' > "$root/repo/agents/test-bench/subagents/child.md"
-  printf 'agent-id: agent-123\nmessage: sync from git\nsync-mode: %s\n' "${1:-staged}" > "$root/repo/agents/test-bench/glean-sync.yaml"
+  if [ -z "$sync_body" ]; then
+    sync_body=$(printf 'agent-id: agent-123\nmessage: sync from git\nsync-mode: %s' "$mode")
+  fi
+  printf '%s\n' "$sync_body" > "$root/repo/agents/test-bench/glean-sync.yaml"
   git -C "$root/repo" init -q
 
   cat > "$root/bin/curl" <<'CURL'
@@ -59,7 +62,8 @@ YQ
 
 run_sync() {
   local root="$1"
-  (cd "$root/repo" && PATH="$root/bin:$PATH" CAPTURE_DIR="$root/capture" RUNNER_TEMP="$root/tmp" GITHUB_OUTPUT="$root/tmp/output" API_TOKEN=test-token AGENT_DIR=agents COMMIT_SHA=deadbeef INSTANCE_URL_BE="$BE_URL" FOLDERS_JSON='["test-bench"]' DEFAULT_MESSAGE='pr title' DEFAULT_SYNC_MODE="${DEFAULT_SYNC_MODE:-staged}" EVENT_NAME="${EVENT_NAME:-pull_request}" FORCE_DRAFT="${FORCE_DRAFT:-false}" PR_RETRY="${PR_RETRY:-}" PR_AUTHOR="${PR_AUTHOR:-octocat}" MOCK_RESPONSE="${MOCK_RESPONSE:-}" MOCK_HTTP_CODE="${MOCK_HTTP_CODE:-200}" bash "$SYNC_SCRIPT" >/dev/null 2>&1) || true
+  RUN_STATUS=0
+  (cd "$root/repo" && PATH="$root/bin:$PATH" CAPTURE_DIR="$root/capture" RUNNER_TEMP="$root/tmp" GITHUB_OUTPUT="$root/tmp/output" API_TOKEN=test-token AGENT_DIR=agents COMMIT_SHA=deadbeef INSTANCE_URL_BE="$BE_URL" FOLDERS_JSON='["test-bench"]' DEFAULT_MESSAGE='pr title' DEFAULT_SYNC_MODE="${DEFAULT_SYNC_MODE:-staged}" EVENT_NAME="${EVENT_NAME:-pull_request}" FORCE_DRAFT="${FORCE_DRAFT:-false}" PR_RETRY="${PR_RETRY:-}" PR_AUTHOR="${PR_AUTHOR:-octocat}" MOCK_RESPONSE="${MOCK_RESPONSE:-}" MOCK_HTTP_CODE="${MOCK_HTTP_CODE:-200}" bash "$SYNC_SCRIPT" >/dev/null 2>&1) || RUN_STATUS=$?
 }
 
 field() { grep -F "$1" "$2/capture/fields" 2>/dev/null || true; }
@@ -74,6 +78,8 @@ test_preview() {
   assert_eq preview-url "$BE_URL/rest/api/v1/agents/agent-123/import" "$(cat "$r/capture/url")"
   assert_eq preview-transient 'transient=true' "$(field transient=true "$r")"
   assert_eq preview-parent 'parentWorkflowId=agent-123' "$(field parentWorkflowId=agent-123 "$r")"
+  assert_eq preview-no-version-source '' "$(field versionSource=GIT "$r")"
+  assert_eq preview-no-baseline '' "$(field publishedBaselineHash= "$r")"
   assert_eq preview-id transient-999 "$(result "$r" '.[0].previewId')"
   unzip -Z1 "$r/capture/bundle.zip" > "$r/entries"
   assert_eq zip-root-directory true "$(grep -qx 'test-bench/spec.yaml' "$r/entries" && echo true || echo false)"
@@ -90,8 +96,100 @@ test_durable() {
   run_sync "$r"
   mode_upper=$(printf '%s' "$mode" | tr '[:lower:]' '[:upper:]')
   assert_eq "${mode}-mode" "syncMode=${mode_upper}" "$(field "syncMode=${mode_upper}" "$r")"
+  assert_eq "${mode}-version-source" 'versionSource=GIT' "$(field versionSource=GIT "$r")"
   assert_eq "${mode}-metadata" 'gitCommitSha=deadbeef' "$(field gitCommitSha=deadbeef "$r")"
+  assert_eq "${mode}-no-baseline" '' "$(field publishedBaselineHash= "$r")"
   assert_eq "${mode}-status" success "$(result "$r" '.[0].status')"
+  rm -rf "$r"
+}
+
+test_published_with_baseline() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published\nbase-published-definition-hash: abcdef0123456789abcd')
+  run_sync "$r"
+  assert_eq published-baseline-version-source 'versionSource=GIT' "$(field versionSource=GIT "$r")"
+  assert_eq published-baseline-value 'publishedBaselineHash=abcdef0123456789abcd' "$(field publishedBaselineHash=abcdef0123456789abcd "$r")"
+  rm -rf "$r"
+}
+
+test_published_blank_baseline() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published\nbase-published-definition-hash: "   "')
+  run_sync "$r"
+  assert_eq blank-baseline-omitted '' "$(field publishedBaselineHash= "$r")"
+  assert_eq blank-baseline-success success "$(result "$r" '.[0].status')"
+  rm -rf "$r"
+}
+
+test_published_malformed_baseline() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published\nbase-published-definition-hash: "not a hash"')
+  run_sync "$r"
+  assert_eq malformed-no-request MISSING "$(cat "$r/capture/url" 2>/dev/null || echo MISSING)"
+  assert_eq malformed-status error "$(result "$r" '.[0].status')"
+  assert_eq malformed-error true "$(result "$r" '.[0].error | contains("malformed")')"
+  rm -rf "$r"
+}
+
+test_staged_ignores_baseline() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=staged
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox staged $'agent-id: agent-123\nmessage: sync from git\nsync-mode: staged\nbase-published-definition-hash: abcdef0123456789abcd')
+  run_sync "$r"
+  assert_eq staged-baseline-omitted '' "$(field publishedBaselineHash= "$r")"
+  rm -rf "$r"
+}
+
+test_conflict_409() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='This agent was updated since you opened it. Refresh to review the latest published version, then publish again.'
+  MOCK_HTTP_CODE=409
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published\nbase-published-definition-hash: abcdef0123456789abcd')
+  run_sync "$r"
+  assert_eq conflict-exit-status 1 "$RUN_STATUS"
+  assert_eq conflict-status conflict "$(result "$r" '.[0].status')"
+  assert_eq conflict-baseline abcdef0123456789abcd "$(result "$r" '.[0].baselineHash')"
+  rm -rf "$r"
+}
+
+test_success_captures_result_hash() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED","workflowResult":{"workflow":{"definitionHash":"newhash0123456789"}}}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox published $'agent-id: agent-123\nmessage: sync from git\nsync-mode: published')
+  run_sync "$r"
+  assert_eq result-hash newhash0123456789 "$(result "$r" '.[0].resultHash')"
+  rm -rf "$r"
+}
+
+test_bundle_excludes_sync_file() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=staged
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox staged)
+  run_sync "$r"
+  assert_eq bundle-excludes-sync-file false "$(unzip -Z1 "$r/capture/bundle.zip" | grep -qx 'test-bench/glean-sync.yaml' && echo true || echo false)"
   rm -rf "$r"
 }
 
@@ -118,6 +216,13 @@ test_outside_symlink() {
 test_preview
 test_durable staged
 test_durable published
+test_published_with_baseline
+test_published_blank_baseline
+test_published_malformed_baseline
+test_staged_ignores_baseline
+test_conflict_409
+test_success_captures_result_hash
+test_bundle_excludes_sync_file
 test_status_mismatch
 test_outside_symlink
 echo "Results: $PASS passed, $FAIL failed"

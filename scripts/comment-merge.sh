@@ -38,6 +38,15 @@ while IFS= read -r ROW; do
     else
       STATUS_TEXT=":white_check_mark: Staged"
     fi
+    RESULT_HASH=$(echo "$ROW" | jq -r '.resultHash // ""')
+    if [ "$SYNC_MODE" = "published" ] && [ -n "$RESULT_HASH" ]; then
+      LINK+="<br>Published hash: ${RESULT_HASH:0:12}…"
+    fi
+  elif [ "$STATUS" = "conflict" ]; then
+    HAS_FAILURE=true
+    STATUS_TEXT="⛔ Conflict"
+    ERR=$(echo "$ROW" | jq -r '.error // "Published baseline is stale"')
+    LINK="${ERR}<br>Pull/export the latest published version, commit \`glean-sync.yaml\`, re-merge."
   else
     HAS_FAILURE=true
     STATUS_TEXT=":x: Sync failed"
