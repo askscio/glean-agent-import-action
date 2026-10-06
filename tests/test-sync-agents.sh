@@ -19,7 +19,7 @@ assert_eq() {
 }
 
 new_sandbox() {
-  local root mode="${1:-staged}" sync_body="${2:-}"
+  local root mode="${1:-staged}" sync_body="${2:-}" hidden_body="${3:-}"
   root=$(mktemp -d)
   mkdir -p "$root/bin" "$root/capture" "$root/tmp" "$root/repo/agents/test-bench/skills/.hidden" "$root/repo/agents/test-bench/subagents"
   printf 'id: agent-123\nname: Auto Bench Agent\n' > "$root/repo/agents/test-bench/spec.yaml"
@@ -30,6 +30,9 @@ new_sandbox() {
     sync_body=$(printf 'agent-id: agent-123\nmessage: sync from git\nsync-mode: %s' "$mode")
   fi
   printf '%s\n' "$sync_body" > "$root/repo/agents/test-bench/glean-sync.yaml"
+  if [ -n "$hidden_body" ]; then
+    printf '%s\n' "$hidden_body" > "$root/repo/agents/test-bench/.glean-sync.yaml"
+  fi
   git -C "$root/repo" init -q
 
   cat > "$root/bin/curl" <<'CURL'
@@ -53,6 +56,9 @@ CURL
 
   cat > "$root/bin/yq" <<'YQ'
 #!/usr/bin/env bash
+if [ "${MOCK_YQ_PARSE_ERROR:-false}" = true ] && [[ "$2" == */.glean-sync.yaml ]]; then
+  exit 1
+fi
 key=$(printf '%s' "$1" | sed -E 's/^\.//; s/[[:space:]]*\/\/.*$//; s/^"//; s/"$//')
 sed -nE "s/^${key}:[[:space:]]*(.*)$/\1/p" "${2:-}" | head -1 | sed -E 's/^"//; s/"$//' || true
 YQ
@@ -63,7 +69,7 @@ YQ
 run_sync() {
   local root="$1"
   RUN_STATUS=0
-  (cd "$root/repo" && PATH="$root/bin:$PATH" CAPTURE_DIR="$root/capture" RUNNER_TEMP="$root/tmp" GITHUB_OUTPUT="$root/tmp/output" API_TOKEN=test-token AGENT_DIR=agents COMMIT_SHA=deadbeef INSTANCE_URL_BE="$BE_URL" FOLDERS_JSON='["test-bench"]' DEFAULT_MESSAGE='pr title' DEFAULT_SYNC_MODE="${DEFAULT_SYNC_MODE:-staged}" EVENT_NAME="${EVENT_NAME:-pull_request}" FORCE_DRAFT="${FORCE_DRAFT:-false}" PR_RETRY="${PR_RETRY:-}" PR_AUTHOR="${PR_AUTHOR:-octocat}" MOCK_RESPONSE="${MOCK_RESPONSE:-}" MOCK_HTTP_CODE="${MOCK_HTTP_CODE:-200}" bash "$SYNC_SCRIPT" >/dev/null 2>&1) || RUN_STATUS=$?
+  (cd "$root/repo" && PATH="$root/bin:$PATH" CAPTURE_DIR="$root/capture" RUNNER_TEMP="$root/tmp" GITHUB_OUTPUT="$root/tmp/output" API_TOKEN=test-token AGENT_DIR=agents COMMIT_SHA=deadbeef INSTANCE_URL_BE="$BE_URL" FOLDERS_JSON='["test-bench"]' DEFAULT_MESSAGE='pr title' DEFAULT_SYNC_MODE="${DEFAULT_SYNC_MODE:-staged}" EVENT_NAME="${EVENT_NAME:-pull_request}" FORCE_DRAFT="${FORCE_DRAFT:-false}" PR_RETRY="${PR_RETRY:-}" PR_AUTHOR="${PR_AUTHOR:-octocat}" MOCK_RESPONSE="${MOCK_RESPONSE:-}" MOCK_HTTP_CODE="${MOCK_HTTP_CODE:-200}" MOCK_YQ_PARSE_ERROR="${MOCK_YQ_PARSE_ERROR:-false}" bash "$SYNC_SCRIPT" >"$root/tmp/log" 2>&1) || RUN_STATUS=$?
 }
 
 field() { grep -F "$1" "$2/capture/fields" 2>/dev/null || true; }
@@ -187,9 +193,84 @@ test_bundle_excludes_sync_file() {
   DEFAULT_SYNC_MODE=staged
   MOCK_RESPONSE='{"status":"UPDATED"}'
   MOCK_HTTP_CODE=200
-  r=$(new_sandbox staged)
+  r=$(new_sandbox staged '' 'definitionHash: abcdef0123456789abcd')
   run_sync "$r"
   assert_eq bundle-excludes-sync-file false "$(unzip -Z1 "$r/capture/bundle.zip" | grep -qx 'test-bench/glean-sync.yaml' && echo true || echo false)"
+  assert_eq bundle-excludes-hidden-sync-file false "$(unzip -Z1 "$r/capture/bundle.zip" | grep -qx 'test-bench/.glean-sync.yaml' && echo true || echo false)"
+  assert_eq hidden-sync-file-unchanged 'definitionHash: abcdef0123456789abcd' "$(cat "$r/repo/agents/test-bench/.glean-sync.yaml")"
+  assert_eq legacy-sync-file-unchanged $'agent-id: agent-123\nmessage: sync from git\nsync-mode: staged' "$(cat "$r/repo/agents/test-bench/glean-sync.yaml")"
+  rm -rf "$r"
+}
+
+test_hidden_baseline() {
+  local name="$1" hidden_body="$2" legacy_hash="$3" expected_hash="$4" r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  MOCK_HTTP_CODE=200
+  r=$(new_sandbox published "base-published-definition-hash: $legacy_hash" "$hidden_body")
+  if [ "$name" = hidden-only ]; then
+    rm "$r/repo/agents/test-bench/glean-sync.yaml"
+  fi
+  run_sync "$r"
+  assert_eq "$name-exit" 0 "$RUN_STATUS"
+  assert_eq "$name-value" "publishedBaselineHash=$expected_hash" "$(field publishedBaselineHash= "$r")"
+  assert_eq "$name-status" success "$(result "$r" '.[0].status')"
+  if [ "$name" = hidden-wins ]; then
+    assert_eq hidden-wins-notice true "$(grep -q '^::notice::.*ignoring legacy' "$r/tmp/log" && echo true || echo false)"
+  fi
+  rm -rf "$r"
+}
+
+test_hidden_invalid() {
+  local name="$1" r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_YQ_PARSE_ERROR="${2:-false}"
+  r=$(new_sandbox published 'base-published-definition-hash: abcdef0123456789abcd' 'definitionHash: "not a hash"')
+  run_sync "$r"
+  assert_eq "$name-exit" 1 "$RUN_STATUS"
+  assert_eq "$name-no-request" MISSING "$(cat "$r/capture/url" 2>/dev/null || echo MISSING)"
+  assert_eq "$name-status" error "$(result "$r" '.[0].status')"
+  assert_eq "$name-error" true "$(result "$r" ".[0].error | contains(\"$name\")")"
+  assert_eq "$name-source" true "$(grep -q '^::error::.*\.glean-sync.yaml' "$r/tmp/log" && echo true || echo false)"
+  MOCK_YQ_PARSE_ERROR=false
+  rm -rf "$r"
+}
+
+test_hidden_ignored() {
+  local event="$1" mode="$2" parse_error="${3:-false}" r hidden_body='definitionHash: abcdef0123456789abcd'
+  EVENT_NAME="$event"
+  DEFAULT_SYNC_MODE="$mode"
+  MOCK_HTTP_CODE=200
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  if [ "$event" = pull_request ]; then
+    MOCK_RESPONSE='{"status":"DRAFT_PREVIEW","workflowResult":{"workflow":{"id":"transient-999"}}}'
+  fi
+  if [ "$parse_error" = true ]; then
+    hidden_body='definitionHash: ['
+  fi
+  r=$(new_sandbox "$mode" '' "$hidden_body")
+  MOCK_YQ_PARSE_ERROR="$parse_error" run_sync "$r"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-exit" 0 "$RUN_STATUS"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-baseline" '' "$(field publishedBaselineHash= "$r")"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-status" success "$(result "$r" '.[0].status')"
+  rm -rf "$r"
+}
+
+test_hidden_conflict() {
+  local r
+  EVENT_NAME=push
+  DEFAULT_SYNC_MODE=published
+  MOCK_HTTP_CODE=409
+  MOCK_RESPONSE='stale published baseline'
+  r=$(new_sandbox published '' 'definitionHash: abcdef0123456789abcd')
+  run_sync "$r"
+  assert_eq hidden-conflict-exit 1 "$RUN_STATUS"
+  assert_eq hidden-conflict-status conflict "$(result "$r" '.[0].status')"
+  assert_eq hidden-conflict-baseline abcdef0123456789abcd "$(result "$r" '.[0].baselineHash')"
+  assert_eq hidden-conflict-recovery true "$(grep -q 'commit the refreshed .glean-sync.yaml' "$r/tmp/log" && echo true || echo false)"
+  MOCK_HTTP_CODE=200
   rm -rf "$r"
 }
 
@@ -223,6 +304,19 @@ test_staged_ignores_baseline
 test_conflict_409
 test_success_captures_result_hash
 test_bundle_excludes_sync_file
+test_hidden_baseline hidden-only 'definitionHash: abcdef0123456789abcd' '' abcdef0123456789abcd
+test_hidden_baseline hidden-wins 'definitionHash: 1111111111111111aaaa' 2222222222222222bbbb 1111111111111111aaaa
+test_hidden_baseline hidden-blank-falls-back 'definitionHash: "  "' abcdef0123456789abcd abcdef0123456789abcd
+test_hidden_baseline hidden-missing-falls-back 'unrelated: value' abcdef0123456789abcd abcdef0123456789abcd
+test_hidden_baseline hidden-trimmed $'definitionHash:   abcdef0123456789abcd  \r' '' abcdef0123456789abcd
+test_hidden_baseline hidden-config-ignored $'definitionHash: abcdef0123456789abcd\nagent-id: other-agent\nsync-mode: staged' '' abcdef0123456789abcd
+test_hidden_invalid malformed
+test_hidden_invalid unparseable true
+test_hidden_ignored push staged
+test_hidden_ignored pull_request published
+test_hidden_ignored push staged true
+test_hidden_ignored pull_request published true
+test_hidden_conflict
 test_status_mismatch
 test_outside_symlink
 echo "Results: $PASS passed, $FAIL failed"

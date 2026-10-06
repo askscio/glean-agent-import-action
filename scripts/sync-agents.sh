@@ -18,6 +18,10 @@ append_result() {
   RESULTS=$(echo "$RESULTS" | jq -c "$@" "$filter" | jq -c --arg folder "$FOLDER" '.[-1] |= . + {folder: $folder}')
 }
 
+read_trimmed() {
+  yq "$1" "$2" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
 package_agent_bundle() {
   local folder_path="$1" bundle_file="$2" materialized bundle_root repo_root target resolved
   command -v zip >/dev/null 2>&1 || {
@@ -47,7 +51,7 @@ package_agent_bundle() {
   done < <(find "$folder_path" -type l -print0)
 
   cp -aL "$folder_path"/. "$bundle_root"/
-  rm -f "$bundle_root/glean-sync.yaml"
+  rm -f "$bundle_root/glean-sync.yaml" "$bundle_root/.glean-sync.yaml"
   (
     cd "$materialized"
     zip -q -r "$bundle_file" .
@@ -87,6 +91,7 @@ while IFS= read -r FOLDER; do
   fi
 
   SYNC_FILE="${FOLDER_PATH}/glean-sync.yaml"
+  HASH_FILE="${FOLDER_PATH}/.glean-sync.yaml"
   AGENT_ID=""
   MESSAGE=""
   AGENT_SYNC_MODE=""
@@ -94,16 +99,36 @@ while IFS= read -r FOLDER; do
     AGENT_ID=$(yq '."agent-id" // ""' "$SYNC_FILE")
     MESSAGE=$(yq '.message // ""' "$SYNC_FILE")
     AGENT_SYNC_MODE=$(yq '."sync-mode" // ""' "$SYNC_FILE")
-    BASE_PUBLISHED_HASH=$(yq '."base-published-definition-hash" // ""' "$SYNC_FILE" \
-      | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
-  else
-    BASE_PUBLISHED_HASH=""
   fi
   SPEC_YAML_ID=$(yq '.id // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
   AGENT_DISPLAY_NAME=$(yq '.name // ""' "${FOLDER_PATH}/spec.yaml" 2>/dev/null || echo "")
   [ -n "$AGENT_DISPLAY_NAME" ] || AGENT_DISPLAY_NAME="$FOLDER"
   [ -n "$AGENT_ID" ] || AGENT_ID="$SPEC_YAML_ID"
   [ -n "$MESSAGE" ] || MESSAGE="${DEFAULT_MESSAGE:-}"
+
+  NEW_HASH=""
+  LEGACY_HASH=""
+  HASH_PARSE_FAILED=false
+  if [ -f "$HASH_FILE" ] && ! NEW_HASH=$(read_trimmed '.definitionHash // ""' "$HASH_FILE"); then
+    HASH_PARSE_FAILED=true
+    NEW_HASH=""
+  fi
+  if [ -f "$SYNC_FILE" ]; then
+    LEGACY_HASH=$(read_trimmed '."base-published-definition-hash" // ""' "$SYNC_FILE")
+  fi
+
+  BASE_PUBLISHED_HASH=""
+  BASELINE_SOURCE=""
+  if [ -n "$NEW_HASH" ]; then
+    BASE_PUBLISHED_HASH="$NEW_HASH"
+    BASELINE_SOURCE=".glean-sync.yaml (definitionHash)"
+    if [ -n "$LEGACY_HASH" ] && [ "$LEGACY_HASH" != "$NEW_HASH" ]; then
+      echo "::notice::Agent ${FOLDER}: using definitionHash from .glean-sync.yaml; ignoring legacy base-published-definition-hash in glean-sync.yaml."
+    fi
+  elif [ -n "$LEGACY_HASH" ]; then
+    BASE_PUBLISHED_HASH="$LEGACY_HASH"
+    BASELINE_SOURCE="glean-sync.yaml (base-published-definition-hash)"
+  fi
 
   if [ -z "$AGENT_ID" ]; then
     echo "::error::Missing agent-id in ${FOLDER} — set the id field in spec.yaml or add a glean-sync.yaml with an agent-id field."
@@ -132,13 +157,20 @@ while IFS= read -r FOLDER; do
   fi
   SEND_BASELINE=false
   if [ "$MODE" = "published" ]; then
+    if [ "$HASH_PARSE_FAILED" = true ]; then
+      echo "::error::Agent ${FOLDER}: unable to parse ${HASH_FILE}. Re-export the agent to regenerate it."
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "unparseable .glean-sync.yaml"}]' \
+        --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE"
+      HAS_FAILURE=true
+      continue
+    fi
     if [ -z "$BASE_PUBLISHED_HASH" ]; then
-      echo "::notice::Agent ${AGENT_ID}: no base-published-definition-hash in glean-sync.yaml; publishing without the stale-baseline guard. Pull/export the agent with the headless builder to enable it."
+      echo "::notice::Agent ${AGENT_ID}: no published baseline (.glean-sync.yaml definitionHash or legacy glean-sync.yaml base-published-definition-hash); publishing without the stale-baseline guard. Pull/export the agent to enable it."
     elif [[ "$BASE_PUBLISHED_HASH" =~ ^[A-Za-z0-9._:-]{16,}$ ]]; then
       SEND_BASELINE=true
     else
-      echo "::error::Agent ${AGENT_ID}: base-published-definition-hash in ${SYNC_FILE} is malformed ('${BASE_PUBLISHED_HASH}'). Re-export the agent to regenerate glean-sync.yaml."
-      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "malformed base-published-definition-hash"}]' \
+      echo "::error::Agent ${AGENT_ID}: published baseline from ${BASELINE_SOURCE} is malformed ('${BASE_PUBLISHED_HASH}'). Re-export the agent to regenerate .glean-sync.yaml."
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "malformed published baseline"}]' \
         --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE"
       HAS_FAILURE=true
       continue
@@ -189,7 +221,7 @@ while IFS= read -r FOLDER; do
   ACTUAL_STATUS=$(jq -r '.status // .workflowResult.status // ""' "$RESPONSE_FILE" 2>/dev/null || echo "")
   if [ "$HTTP_CODE" -eq 409 ]; then
     RESP_BODY=$(tr '\n' ' ' < "$RESPONSE_FILE" 2>/dev/null || echo "no response body")
-    echo "::error::Agent ${AGENT_ID} was published outside Git since the repo baseline was taken (HTTP 409): ${RESP_BODY}. Pull/export the latest published version with the headless builder, commit the refreshed glean-sync.yaml, and re-merge."
+    echo "::error::Agent ${AGENT_ID} was published outside Git since the repo baseline was taken (HTTP 409): ${RESP_BODY}. Pull/export the latest published version, commit the refreshed .glean-sync.yaml, and re-merge."
     append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "conflict", "error": $err, "baselineHash": $base}]' \
       --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE" \
       --arg err "stale published baseline (HTTP 409)" --arg base "$BASE_PUBLISHED_HASH"
