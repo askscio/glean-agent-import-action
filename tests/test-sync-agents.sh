@@ -239,7 +239,7 @@ test_hidden_invalid() {
 }
 
 test_hidden_ignored() {
-  local event="$1" mode="$2" r
+  local event="$1" mode="$2" parse_error="${3:-false}" r hidden_body='definitionHash: abcdef0123456789abcd'
   EVENT_NAME="$event"
   DEFAULT_SYNC_MODE="$mode"
   MOCK_HTTP_CODE=200
@@ -247,11 +247,14 @@ test_hidden_ignored() {
   if [ "$event" = pull_request ]; then
     MOCK_RESPONSE='{"status":"DRAFT_PREVIEW","workflowResult":{"workflow":{"id":"transient-999"}}}'
   fi
-  r=$(new_sandbox "$mode" '' 'definitionHash: abcdef0123456789abcd')
-  run_sync "$r"
-  assert_eq "$event-$mode-hidden-ignored-exit" 0 "$RUN_STATUS"
-  assert_eq "$event-$mode-hidden-ignored-baseline" '' "$(field publishedBaselineHash= "$r")"
-  assert_eq "$event-$mode-hidden-ignored-status" success "$(result "$r" '.[0].status')"
+  if [ "$parse_error" = true ]; then
+    hidden_body='definitionHash: ['
+  fi
+  r=$(new_sandbox "$mode" '' "$hidden_body")
+  MOCK_YQ_PARSE_ERROR="$parse_error" run_sync "$r"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-exit" 0 "$RUN_STATUS"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-baseline" '' "$(field publishedBaselineHash= "$r")"
+  assert_eq "$event-$mode-hidden-ignored-$parse_error-status" success "$(result "$r" '.[0].status')"
   rm -rf "$r"
 }
 
@@ -311,6 +314,8 @@ test_hidden_invalid malformed
 test_hidden_invalid unparseable true
 test_hidden_ignored push staged
 test_hidden_ignored pull_request published
+test_hidden_ignored push staged true
+test_hidden_ignored pull_request published true
 test_hidden_conflict
 test_status_mismatch
 test_outside_symlink

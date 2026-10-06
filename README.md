@@ -137,10 +137,10 @@ Only the baseline moves: `agent-id`, `sync-mode`, and `message` are still read e
 
 | Configuration | Behavior |
 |---|---|
-| `staged` | The baseline is ignored; staged sync remains last-write-wins. |
+| `staged` or `draft_preview` | The baseline is ignored, including an unparseable `.glean-sync.yaml`; staged sync remains last-write-wins. |
 | `published` with a plausible baseline | Sends the baseline to the server, which rejects a stale publish with HTTP 409. |
 | `published` without a baseline | Publishes without the guard and emits a notice. |
-| `published` with a malformed baseline | Fails locally before making a request. |
+| `published` with a malformed baseline or unparseable `.glean-sync.yaml` | Fails locally before making a request. |
 
 An HTTP 409 means the agent was published outside this Git sync after the repository baseline was taken. The Action marks the result as `conflict`, leaves the server-side agent unchanged, and reports the server message. Pull/export the latest published version, commit the refreshed `.glean-sync.yaml`, and re-merge. A successful published sync reports its new hash in the merge comment as a recovery aid.
 

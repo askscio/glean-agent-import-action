@@ -108,12 +108,10 @@ while IFS= read -r FOLDER; do
 
   NEW_HASH=""
   LEGACY_HASH=""
+  HASH_PARSE_FAILED=false
   if [ -f "$HASH_FILE" ] && ! NEW_HASH=$(read_trimmed '.definitionHash // ""' "$HASH_FILE"); then
-    echo "::error::Agent ${FOLDER}: unable to parse ${HASH_FILE}. Re-export the agent to regenerate it."
-    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "unparseable .glean-sync.yaml"}]' \
-      --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE"
-    HAS_FAILURE=true
-    continue
+    HASH_PARSE_FAILED=true
+    NEW_HASH=""
   fi
   if [ -f "$SYNC_FILE" ]; then
     LEGACY_HASH=$(read_trimmed '."base-published-definition-hash" // ""' "$SYNC_FILE")
@@ -159,6 +157,13 @@ while IFS= read -r FOLDER; do
   fi
   SEND_BASELINE=false
   if [ "$MODE" = "published" ]; then
+    if [ "$HASH_PARSE_FAILED" = true ]; then
+      echo "::error::Agent ${FOLDER}: unable to parse ${HASH_FILE}. Re-export the agent to regenerate it."
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "unparseable .glean-sync.yaml"}]' \
+        --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg mode "$MODE"
+      HAS_FAILURE=true
+      continue
+    fi
     if [ -z "$BASE_PUBLISHED_HASH" ]; then
       echo "::notice::Agent ${AGENT_ID}: no published baseline (.glean-sync.yaml definitionHash or legacy glean-sync.yaml base-published-definition-hash); publishing without the stale-baseline guard. Pull/export the agent to enable it."
     elif [[ "$BASE_PUBLISHED_HASH" =~ ^[A-Za-z0-9._:-]{16,}$ ]]; then
