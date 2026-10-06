@@ -38,6 +38,7 @@ new_sandbox() {
   cat > "$root/bin/curl" <<'CURL'
 #!/usr/bin/env bash
 set -euo pipefail
+: > "$CAPTURE_DIR/curl-called"
 out=""; url=""; fields=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -294,6 +295,95 @@ test_outside_symlink() {
   rm -rf "$r" "$outside"
 }
 
+test_merge_group() {
+  local mode="$1" hash="$2" expected_status="$3" parse_error="${4:-false}" r expected_exit=0
+  local expected_hash="$hash" expected_error='malformed published baseline'
+  EVENT_NAME=merge_group
+  DEFAULT_SYNC_MODE="$mode"
+  MOCK_HTTP_CODE=200
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  r=$(new_sandbox "$mode" '' "definitionHash: $hash")
+  # Merge-queue validation takes priority even if preview inputs are set.
+  FORCE_DRAFT=true PR_RETRY=123 MOCK_YQ_PARSE_ERROR="$parse_error" run_sync "$r"
+  if [ "$parse_error" = true ]; then
+    expected_hash=''
+    expected_error='unparseable .glean-sync.yaml'
+  fi
+  [ "$expected_status" = error ] && expected_exit=1
+  assert_eq "merge-group-$mode-$hash-exit" "$expected_exit" "$RUN_STATUS"
+  assert_eq "merge-group-$mode-$hash-status" "$expected_status" "$(result "$r" '.[0].status')"
+  assert_eq "merge-group-$mode-$hash-mode" validate "$(result "$r" '.[0].mode')"
+  assert_eq "merge-group-$mode-$hash-no-request" false "$(test -e "$r/capture/curl-called" && echo true || echo false)"
+  if [ "$expected_status" = success ]; then
+    assert_eq "merge-group-$mode-$hash-baseline" "$expected_hash" "$(result "$r" '.[0].baselineHash')"
+    assert_eq "merge-group-$mode-$hash-packaged" true "$(test -f "$r/tmp/agent-test-bench.zip" && echo true || echo false)"
+  else
+    assert_eq "merge-group-$mode-$hash-error" "$expected_error" "$(result "$r" '.[0].error')"
+  fi
+  rm -rf "$r"
+}
+
+test_merge_group_invalid_agent() {
+  local problem="$1" r
+  EVENT_NAME=merge_group
+  r=$(new_sandbox staged)
+  case "$problem" in
+    deleted) rm -rf "$r/repo/agents/test-bench" ;;
+    missing-spec) rm "$r/repo/agents/test-bench/spec.yaml" ;;
+    missing-id)
+      printf 'name: No ID\n' > "$r/repo/agents/test-bench/spec.yaml"
+      printf 'sync-mode: staged\n' > "$r/repo/agents/test-bench/glean-sync.yaml" ;;
+    mismatched-id) printf 'agent-id: other-agent\n' > "$r/repo/agents/test-bench/glean-sync.yaml" ;;
+    invalid-mode) printf 'sync-mode: invalid\n' > "$r/repo/agents/test-bench/glean-sync.yaml" ;;
+    outside-symlink) ln -s "$r/capture" "$r/repo/agents/test-bench/outside" ;;
+    copy-failure)
+      printf '#!/usr/bin/env bash\ncommand -p cp "$@"\nexit 1\n' > "$r/bin/cp"
+      chmod +x "$r/bin/cp" ;;
+    zip-failure)
+      printf '#!/usr/bin/env bash\nexit 1\n' > "$r/bin/zip"
+      chmod +x "$r/bin/zip" ;;
+  esac
+  run_sync "$r"
+  assert_eq "merge-group-$problem-exit" 1 "$RUN_STATUS"
+  assert_eq "merge-group-$problem-status" error "$(result "$r" '.[0].status')"
+  assert_eq "merge-group-$problem-no-request" false "$(test -e "$r/capture/curl-called" && echo true || echo false)"
+  rm -rf "$r"
+}
+
+test_event_mode() {
+  local event="$1" force_draft="$2" retry="$3" expected_mode="$4" r
+  EVENT_NAME="$event"
+  MOCK_HTTP_CODE=200
+  MOCK_RESPONSE='{"status":"UPDATED"}'
+  if [ "$expected_mode" = draft_preview ]; then
+    MOCK_RESPONSE='{"status":"DRAFT_PREVIEW","workflowResult":{"workflow":{"id":"transient-999"}}}'
+  fi
+  r=$(new_sandbox published '' 'definitionHash: abcdef0123456789abcd')
+  FORCE_DRAFT="$force_draft" PR_RETRY="$retry" run_sync "$r"
+  assert_eq "$event-$force_draft-$retry-exit" 0 "$RUN_STATUS"
+  assert_eq "$event-$force_draft-$retry-mode" "$expected_mode" "$(result "$r" '.[0].mode')"
+  assert_eq "$event-$force_draft-$retry-status" success "$(result "$r" '.[0].status')"
+  if [ "$expected_mode" = draft_preview ]; then
+    assert_eq "$event-$force_draft-$retry-transient" transient=true "$(field transient=true "$r")"
+    assert_eq "$event-$force_draft-$retry-no-baseline" '' "$(field publishedBaselineHash= "$r")"
+  else
+    assert_eq "$event-$force_draft-$retry-baseline" publishedBaselineHash=abcdef0123456789abcd "$(field publishedBaselineHash= "$r")"
+  fi
+  rm -rf "$r"
+}
+
+test_unsupported_event() {
+  local r
+  EVENT_NAME=schedule
+  r=$(new_sandbox published)
+  FORCE_DRAFT=true run_sync "$r"
+  assert_eq unsupported-event-exit 1 "$RUN_STATUS"
+  assert_eq unsupported-event-no-request false "$(test -e "$r/capture/curl-called" && echo true || echo false)"
+  assert_eq unsupported-event-status error "$(result "$r" '.[0].status')"
+  assert_eq unsupported-event-error 'unsupported event' "$(result "$r" '.[0].error')"
+  rm -rf "$r"
+}
+
 test_preview
 test_durable staged
 test_durable published
@@ -319,5 +409,19 @@ test_hidden_ignored pull_request published true
 test_hidden_conflict
 test_status_mismatch
 test_outside_symlink
+test_merge_group published abcdef0123456789abcd success
+test_merge_group published '' success
+test_merge_group published 'not a hash' error
+test_merge_group staged 'not a hash' success
+test_merge_group published '[' error true
+test_merge_group staged '[' success true
+for problem in deleted missing-spec missing-id mismatched-id invalid-mode outside-symlink copy-failure zip-failure; do
+  test_merge_group_invalid_agent "$problem"
+done
+test_event_mode workflow_dispatch false '' published
+test_event_mode workflow_dispatch false 123 draft_preview
+test_event_mode workflow_dispatch true '' draft_preview
+test_event_mode push true '' draft_preview
+test_unsupported_event
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

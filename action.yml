@@ -31,7 +31,7 @@ inputs:
     default: ''
 outputs:
   synced-agents:
-    description: 'JSON array of synced agent summaries. status may be success, error, or conflict; durable results may include resultHash and baselineHash.'
+    description: 'JSON array of synced agent summaries. mode may be validate (merge queue). status may be success, error, or conflict; durable results may include resultHash and baselineHash.'
     value: ${{ steps.sync.outputs.synced-agents }}
 
 runs:
@@ -45,6 +45,7 @@ runs:
         SHARED_ROOT: ${{ inputs.shared-root }}
         EVENT_NAME: ${{ github.event_name }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         PUSH_BEFORE_SHA: ${{ github.event.before }}
         PR_TITLE: ${{ github.event.pull_request.title }}
         SPECIFIC_AGENT_FOLDER: ${{ github.event.inputs.agent_folder }}
@@ -74,7 +75,7 @@ runs:
 
     - name: Resolve PR author
       id: pr-author
-      if: steps.detect.outputs.folders != '[]'
+      if: steps.detect.outputs.folders != '[]' && github.event_name != 'merge_group'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

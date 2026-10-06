@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Integration tests for detect-changes.sh
 # Creates temporary git fixture repos and validates which agent folders are
-# reported as "changed" for pull_request / push / workflow_dispatch events.
+# reported as "changed" for pull_request / push / workflow_dispatch / merge_group events.
 # In particular: a base-branch advance or a messy rebase must not misreport
 # agents the branch never actually changed (which would draft-sync and
 # misattribute unrelated agents to the PR author).
@@ -14,6 +14,18 @@ DETECT_SCRIPT="${SCRIPT_DIR}/../scripts/detect-changes.sh"
 PASS=0
 FAIL=0
 ERRORS=""
+
+assert_eq() {
+  local name="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "  PASS: $name"
+    PASS=$((PASS+1))
+  else
+    echo "  FAIL: $name (expected '$expected', got '$actual')"
+    FAIL=$((FAIL+1))
+    ERRORS+="  - $name\n"
+  fi
+}
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -53,7 +65,7 @@ commit_agent() {
 }
 
 # Run detect-changes.sh in a fixture repo and echo the resolved `folders` JSON.
-# Reads EVENT_NAME / PR_BASE_SHA / PUSH_BEFORE_SHA from the environment.
+# Reads event and base SHA variables from the environment.
 run_detect() {
   local repo="$1" out
   out=$(mktemp)
@@ -61,6 +73,7 @@ run_detect() {
     cd "$repo" &&
     GITHUB_OUTPUT="$out" AGENT_DIR="agents" \
       EVENT_NAME="$EVENT_NAME" PR_BASE_SHA="${PR_BASE_SHA:-}" PUSH_BEFORE_SHA="${PUSH_BEFORE_SHA:-}" \
+      MERGE_GROUP_BASE_SHA="${MERGE_GROUP_BASE_SHA:-}" \
       bash "$DETECT_SCRIPT" >/dev/null 2>&1
   ) || true
   awk '/^folders<</{getline; print; exit}' "$out"
@@ -169,6 +182,45 @@ test_workflow_dispatch_syncs_all() {
   rm -rf "$r"
 }
 
+test_merge_group() {
+  local change="$1" r base out run_status=0
+  echo "Test: merge_group $change"
+  r=$(new_repo)
+  commit_agent "$r" unchanged v1 'base agent'
+  commit_agent "$r" edited v1 'another base agent'
+  base=$(git -C "$r" rev-parse HEAD)
+  git -C "$r" checkout -q -b gh-readonly-queue/main/test
+  case "$change" in
+    agents)
+      commit_agent "$r" edited v2 'first queued PR edits an agent'
+      commit_agent "$r" added v1 'second queued PR adds an agent' ;;
+    no-agents)
+      printf 'docs\n' > "$r/README.md"
+      git -C "$r" add -A
+      git -C "$r" commit -q -m docs ;;
+    missing-base) base='' ;;
+  esac
+  out="$r/detect-output"
+  (cd "$r" && GITHUB_OUTPUT="$out" AGENT_DIR=agents EVENT_NAME=merge_group \
+    MERGE_GROUP_BASE_SHA="$base" PR_BASE_SHA='' PUSH_BEFORE_SHA='' \
+    bash "$DETECT_SCRIPT" >"$r/detect-log" 2>&1) || run_status=$?
+  case "$change" in
+    agents)
+      assert_eq merge-group-exit 0 "$run_status"
+      assert_folders 'merge group includes all queued changes only' '["added","edited"]' "$(awk '/^folders<</{getline; print; exit}' "$out")"
+      assert_eq merge-group-event merge_group "$(sed -n 's/^event=//p' "$out")"
+      assert_eq merge-group-head "$(git -C "$r" rev-parse HEAD)" "$(sed -n 's/^commit_sha=//p' "$out")" ;;
+    no-agents)
+      assert_eq merge-group-no-agents-exit 0 "$run_status"
+      assert_eq merge-group-no-agents '[]' "$(awk '/^folders<</{getline; print; exit}' "$out")" ;;
+    missing-base)
+      assert_eq merge-group-missing-base-exit 1 "$run_status"
+      assert_eq merge-group-missing-base-no-folders false "$(grep -q '^folders<<' "$out" 2>/dev/null && echo true || echo false)"
+      assert_eq merge-group-missing-base-error true "$(grep -q 'refusing to fall back' "$r/detect-log" && echo true || echo false)" ;;
+  esac
+  rm -rf "$r"
+}
+
 # ── Runner ──────────────────────────────────────────────────────────────────
 
 test_base_advanced_after_branch
@@ -184,6 +236,9 @@ echo ""
 test_docs_only_push
 echo ""
 test_workflow_dispatch_syncs_all
+test_merge_group agents
+test_merge_group no-agents
+test_merge_group missing-base
 
 echo ""
 echo "========================================="

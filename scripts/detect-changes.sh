@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Required env: AGENT_DIR, EVENT_NAME, PR_BASE_SHA, PUSH_BEFORE_SHA
-# Optional env: PR_TITLE, SPECIFIC_AGENT_FOLDER, SHARED_ROOT
+# Optional env: PR_TITLE, SPECIFIC_AGENT_FOLDER, SHARED_ROOT, MERGE_GROUP_BASE_SHA
 
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=github_output.sh
@@ -27,6 +27,12 @@ if [ "$EVENT_NAME" = "pull_request" ]; then
   BASE_SHA="$PR_BASE_SHA"
 elif [ "$EVENT_NAME" = "push" ]; then
   BASE_SHA="$PUSH_BEFORE_SHA"
+elif [ "$EVENT_NAME" = "merge_group" ]; then
+  if [ -z "${MERGE_GROUP_BASE_SHA:-}" ]; then
+    echo "::error::merge_group event without merge_group.base_sha; refusing to fall back to syncing all agents."
+    exit 1
+  fi
+  BASE_SHA="$MERGE_GROUP_BASE_SHA"
 else
   # workflow_dispatch or any other event: sync all agent folders
   BASE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git empty-tree SHA

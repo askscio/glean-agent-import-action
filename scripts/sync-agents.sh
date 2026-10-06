@@ -50,8 +50,8 @@ package_agent_bundle() {
     esac
   done < <(find "$folder_path" -type l -print0)
 
-  cp -aL "$folder_path"/. "$bundle_root"/
-  rm -f "$bundle_root/glean-sync.yaml" "$bundle_root/.glean-sync.yaml"
+  cp -aL "$folder_path"/. "$bundle_root"/ || return 1
+  rm -f "$bundle_root/glean-sync.yaml" "$bundle_root/.glean-sync.yaml" || return 1
   (
     cd "$materialized"
     zip -q -r "$bundle_file" .
@@ -151,12 +151,24 @@ while IFS= read -r FOLDER; do
     continue
   fi
 
-  MODE="draft_preview"
-  if [ "${FORCE_DRAFT:-false}" != "true" ] && { [ "$EVENT_NAME" != "pull_request" ] && { [ "$EVENT_NAME" != "workflow_dispatch" ] || [ -z "${PR_RETRY:-}" ]; }; }; then
-    MODE="$EFFECTIVE_SYNC_MODE"
-  fi
+  case "$EVENT_NAME" in
+    merge_group) MODE="validate" ;;
+    pull_request) MODE="draft_preview" ;;
+    push|workflow_dispatch)
+      if [ "${FORCE_DRAFT:-false}" = "true" ] || { [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${PR_RETRY:-}" ]; }; then
+        MODE="draft_preview"
+      else
+        MODE="$EFFECTIVE_SYNC_MODE"
+      fi ;;
+    *)
+      echo "::error::Unsupported event '${EVENT_NAME}' — Glean Agent Sync runs on pull_request, merge_group, push, and workflow_dispatch."
+      append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "unknown", "status": "error", "error": "unsupported event"}]' \
+        --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE"
+      HAS_FAILURE=true
+      continue ;;
+  esac
   SEND_BASELINE=false
-  if [ "$MODE" = "published" ]; then
+  if [ "$MODE" = "published" ] || { [ "$MODE" = "validate" ] && [ "$EFFECTIVE_SYNC_MODE" = "published" ]; }; then
     if [ "$HASH_PARSE_FAILED" = true ]; then
       echo "::error::Agent ${FOLDER}: unable to parse ${HASH_FILE}. Re-export the agent to regenerate it."
       append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": $mode, "status": "error", "error": "unparseable .glean-sync.yaml"}]' \
@@ -190,6 +202,13 @@ while IFS= read -r FOLDER; do
 
   echo "Agent: $AGENT_ID (folder: $FOLDER)"
   echo "  Mode: $MODE | AgentMode: $AGENT_MODE | Message: $MESSAGE"
+
+  if [ "$MODE" = "validate" ]; then
+    echo "  Validated for merge queue (no request sent)"
+    append_result '. + [{"agentId": $aid, "agentName": $name, "agentMode": $agentMode, "mode": "validate", "status": "success", "baselineHash": $base}]' \
+      --arg aid "$AGENT_ID" --arg name "$AGENT_DISPLAY_NAME" --arg agentMode "$AGENT_MODE" --arg base "$BASE_PUBLISHED_HASH"
+    continue
+  fi
 
   CURL_ARGS=(curl -sS --connect-timeout 10 --max-time 60 -o "$RESPONSE_FILE" -w '%{http_code}' -X POST "$REQUEST_URL" -H "Authorization: Bearer ${API_TOKEN}" -F "bundle=@${BUNDLE_FILE};type=application/zip")
   if [ "$IS_PREVIEW" = "true" ]; then

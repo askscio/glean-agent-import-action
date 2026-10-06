@@ -3,6 +3,7 @@
 A GitHub Action that keeps your git-managed Glean agents in sync with your Glean workspace.
 
 - **On pull requests** — creates a draft preview in Glean and posts a comment with preview links
+- **In the merge queue** — validates the combined merge result locally, without importing agents or posting PR comments
 - **On merge** — syncs updated agent definitions into Glean (staged or published) and posts run links back to the PR
 
 ## Usage
@@ -12,13 +13,18 @@ name: Glean Agent Sync
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - '.glean/agents/**'
+      - '.glean/common/**'
+  merge_group:
+    types: [checks_requested]  # paths filters are not supported; unchanged agents are skipped
   push:
     branches:
       - main
     paths:
       - '.glean/agents/**'
+      - '.glean/common/**'
   workflow_dispatch:
     inputs:
       agent_folder:
@@ -61,7 +67,7 @@ jobs:
 
 | Output | Description |
 |--------|-------------|
-| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, previewId, status}]`. `status` may be `success`, `error`, or `conflict`; durable results may include `resultHash` and `baselineHash`. `previewId` is the transient preview workflow's id, set only for `draft_preview`. |
+| `synced-agents` | JSON array of per-agent results: `[{agentId, agentName, agentMode, mode, message, previewId, status}]`. `mode` may be `validate` (merge queue). `status` may be `success`, `error`, or `conflict`; durable results may include `resultHash` and `baselineHash`, and successful validation results include `baselineHash`. `previewId` is the transient preview workflow's id, set only for `draft_preview`. |
 
 ## Workflow dispatch inputs
 
@@ -118,10 +124,31 @@ base-published-definition-hash: 3f2a9c... # Legacy: still honored as a fallback 
 | Mode | Trigger | Behaviour |
 |------|---------|-----------|
 | `draft_preview` | Pull request (always) | Creates an isolated, throwaway preview agent in Glean. The real agent's draft, staged, and published content are left untouched. Preview link posted to the PR. |
+| `validate` | Merge queue (`merge_group`) | Checks and packages the combined merge result locally. Makes no Glean API requests and posts no PR comments. |
 | `staged` | Push/merge (default) | Saves a new staged version pending moderator approval in Glean. |
 | `published` | Push/merge (opt-in) | Immediately publishes the agent to all users. |
 
 To publish on merge, set `default-sync-mode: published` on the action input, or set `sync-mode: published` in a specific agent's `glean-sync.yaml`.
+
+Durable writes are allowed only on `push` and non-retry `workflow_dispatch` events. Dispatch retries and forced drafts create previews; unsupported events fail before an import request.
+
+### Merge queue setup
+
+Repository admins must enable the merge queue, add `merge_group: {types: [checks_requested]}` to the caller workflow, and mark the sync job as a required check in the ruleset. Use an Action revision that supports `validate` before adding the trigger. The Action cannot configure these repository settings.
+
+`merge_group` does not support `paths` filters, so the workflow runs for every queue entry. The Action diffs the checked-out queue commit against `github.event.merge_group.base_sha`, covering all queued PRs in that combined result. Runs without agent or dependent shared-resource changes finish successfully with nothing to sync. A missing merge-group base SHA fails instead of syncing all agents.
+
+If the workflow uses concurrency keyed on a PR number, fall back to `github.ref` for queue entries, for example:
+
+```yaml
+concurrency:
+  group: glean-agent-sync-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+```
+
+Validation checks for deleted folders, missing `spec.yaml`, missing or mismatched agent IDs, invalid sync modes, malformed published baselines, symlinks outside the checkout, and packaging failures. New agents can pass without already existing in Glean. Deleting an agent folder fails validation; retire it through Agent Builder first.
+
+Validation does not check the baseline against the live published hash. A malformed hash blocks a published-mode agent in the queue; a stale but well-formed hash is rejected by the server's HTTP 409 guard during the post-merge push. Staged-mode validation ignores the baseline value. After merging, `push` stages or publishes as usual.
 
 ## Published baseline guard
 
@@ -148,9 +175,9 @@ Durable syncs now send `versionSource=GIT`, so synced versions appear as **Synce
 
 ## How it works
 
-1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
+1. **Detect** — diffs changed files against the base SHA to find which agent folders changed. Merge queues use `merge_group.base_sha`. On `workflow_dispatch`, syncs all folders (or the specific folder provided via `agent_folder` input).
 2. **Package** — packages each agent folder into a ZIP with one top-level agent directory, matching the server’s import format. Symlinks are validated to stay inside the checkout, then dereferenced so the upload contains only regular files and directories, including dotfiles and nested assets.
-3. **Import** — uploads the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. Durable imports include `syncMode=STAGED|PUBLISHED` and `versionSource=GIT`, plus Git metadata when available. Published imports include `publishedBaselineHash` when the sidecar provides a plausible baseline. PR imports remain isolated transient previews and do not send provenance or baseline fields.
+3. **Import or validate** — merge-queue validation stops after local checks and packaging. Other supported events upload the ZIP as multipart form data to `POST /rest/api/v1/agents/{id}/import`. Durable imports include `syncMode=STAGED|PUBLISHED` and `versionSource=GIT`, plus Git metadata when available. Published imports include `publishedBaselineHash` when the sidecar provides a plausible baseline. PR imports remain isolated transient previews and do not send provenance or baseline fields.
 4. **Comment** — posts a PR comment with draft preview links (on pull requests) or sync status + run links (on push/merge).
 
 ## Shared resources (`shared-root`)
@@ -194,9 +221,12 @@ In this layout:
 ```yaml
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - '.glean/agents/**'
       - '.glean/common/**'      # trigger on shared resource changes too
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
     paths:
